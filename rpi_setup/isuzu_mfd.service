@@ -1,0 +1,17 @@
+[Unit]
+Description=Isuzu MFD Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=elg
+WorkingDirectory=/home/elg/isuzu_dev_ui2/build
+ExecStart=/home/elg/isuzu_dev_ui2/build/isuzu_mfd
+Restart=on-failure
+RestartSec=5
+
+# Allow access to framebuffer and input devices
+SupplementaryGroups=video input
+
+[Install]
+WantedBy=multi-user.target
