@@ -1,0 +1,15 @@
+[Unit]
+Description=Isuzu MFD Boot Update Check
+After=network-online.target isuzu_mfd.service
+Wants=network-online.target
+RequiresMountsFor=/mnt/candata
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/elg/isuzu_mfd/scripts/boot_update_check.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

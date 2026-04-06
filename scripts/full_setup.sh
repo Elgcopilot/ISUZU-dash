@@ -303,6 +303,16 @@ EOF
     echo "  Service installed and enabled"
 
     # ----------------------------------------------------------
+    # 2.6b: Install boot update check service
+    # ----------------------------------------------------------
+    echo "  Installing boot update check service..."
+    chmod +x "$APP_DIR/scripts/boot_update_check.sh"
+    cp "$APP_DIR/scripts/isuzu_mfd_update.service" /etc/systemd/system/isuzu_mfd_update.service
+    systemctl daemon-reload
+    systemctl enable isuzu_mfd_update.service
+    echo "  Boot update check enabled (auto-update on power-on)"
+
+    # ----------------------------------------------------------
     # 2.7: Configure sudoers for CI/CD
     # ----------------------------------------------------------
     echo "[7/8] Configuring sudoers for CI/CD..."
