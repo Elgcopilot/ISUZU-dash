@@ -6,8 +6,8 @@
 /* =========================================================
  * VEHICLE PROFILE — uncomment ONE line:
  * ========================================================= */
-#define VEHICLE_PRIUS   // Toyota Prius 2013 test (RPM only via OBD)
-//#define VEHICLE_ISUZU   // Isuzu D-Max full dashboard
+#define VEHICLE_ISUZU   // Isuzu D-Max full dashboard
+//#define VEHICLE_PRIUS   // Toyota Prius 2013 test (RPM only via OBD)
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
@@ -81,7 +81,7 @@ void *can_rx_thread(void *arg) {
             uint32_t id = frame.can_id & CAN_SFF_MASK;
             
 #ifdef VEHICLE_PRIUS
-            /* --- PRIUS: RPM + Battery Voltage via OBD --- */
+            /* --- PRIUS: RPM + Battery Voltage + Coolant via OBD --- */
             if (id == 0x7E8 && frame.data[1] == 0x41) {
                 int pid = frame.data[2];
                 int A = frame.data[3];
@@ -93,6 +93,10 @@ void *can_rx_thread(void *arg) {
                 if (pid == 0x42) {
                     local_data.battery_voltage = (A * 256 + B) / 1000.0f;
                     printf("Battery: %.1fV\n", local_data.battery_voltage);
+                }
+                if (pid == 0x05) {
+                    local_data.coolant_temp = A - 40;
+                    printf("Coolant: %d C\n", local_data.coolant_temp);
                 }
             }
 #endif
@@ -127,12 +131,13 @@ void *can_rx_thread(void *arg) {
                         if (pid == 0x10) local_data.maf = (A * 256 + B) / 100.0f;
                         if (pid == 0x5E) local_data.fuel_rate = (A * 256 + B) / 20.0f;
                         if (pid == 0x0F) local_data.intake_temp = A - 40;
+                        if (pid == 0x42) local_data.battery_voltage = (A * 256 + B) / 1000.0f;
                     }
                     break;
             }
 #endif
 
-            if (++sync_counter > 10) {
+            if (++sync_counter > 3) {
                 pthread_mutex_lock(&data_mutex);
                 v_data = local_data;
                 v_data.can_connected = true;
@@ -141,7 +146,7 @@ void *can_rx_thread(void *arg) {
                 pthread_mutex_unlock(&data_mutex);
                 sync_counter = 0;
 
-                // Sleep 1ms every 10 packets to prevent CPU starvation
+                // Sleep 1ms every few packets to prevent CPU starvation
                 usleep(1000);
             }
         }
@@ -157,10 +162,11 @@ void *can_tx_obd_thread(void *arg) {
     printf("TX Thread: OBD Polling ENABLED (0x7DF)\n");
 
 #ifdef VEHICLE_PRIUS
-    /* Prius test: RPM + Battery Voltage */
+    /* Prius test: RPM + Battery Voltage + Coolant */
     static const uint8_t obd_pids[] = {
         0x0C, // Engine RPM
         0x42, // Control module voltage (12V battery)
+        0x05, // Coolant temperature
     };
 #endif
 
@@ -175,6 +181,7 @@ void *can_tx_obd_thread(void *arg) {
         0x0F, // Intake air temperature
         0x10, // MAF air flow rate
         0x5E, // Engine fuel rate
+        0x42, // Control module voltage (12V battery)
     };
 #endif
 
@@ -195,7 +202,7 @@ void *can_tx_obd_thread(void *arg) {
         if (write(s_tx, &frame, sizeof(struct can_frame)) > 0) {
             i = (i + 1) % num_pids;
         }
-        usleep(100000); // 100ms between polls
+        usleep(50000); // 50ms between polls — faster data for smooth gauges
     }
     return NULL;
 }
@@ -237,28 +244,3 @@ void *simulator_thread(void *arg) {
    // }
    // return NULL;
 }
-// ```
-
-// ### **2. Important: Update `ui/ui.c`**
-// Now that the simulator logic is in `can_mgr.c`, you **MUST remove** the temporary `#define DEMO_MODE` logic from your `ui.c` file, otherwise it will ignore the simulator thread and keep showing the fixed 1000 RPM you set earlier.
-
-// In `ui/ui.c`, simply comment out or delete this line at the top:
-
-// ```c
-// // #define DEMO_MODE  <-- Comment this out!
-// ```
-
-// ### **3. How to Start the Simulator**
-// By default, your `main.c` checks for `can0`.
-// * **If CAN cable is connected:** It runs Real Mode (Reading from car).
-// * **If CAN cable is disconnected/down:** It runs Simulator Mode.
-
-// **To FORCE Simulator Mode (even if cable is connected):**
-// Edit `app/main.c`:
-
-// ```c
-    // if(access("/sys/class/net/can0", F_OK) == 0) { ... }
-    // else {
-        // printf("Forcing Simulator...\n");
-        // pthread_create(&rx_th, NULL, simulator_thread, NULL);
-    // }

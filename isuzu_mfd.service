@@ -1,0 +1,15 @@
+[Unit]
+Description=Isuzu MFD Dashboard
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/ip link set can0 down
+ExecStartPre=/sbin/ip link set can0 up type can bitrate 500000 restart-ms 100
+ExecStart=/home/elg/isuzu_mfd/build/isuzu_mfd
+Restart=on-failure
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

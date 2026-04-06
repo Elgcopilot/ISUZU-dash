@@ -11,6 +11,8 @@
 #include <time.h>
 #include <stdio.h>
 #include <sched.h>
+#include <stdlib.h>
+#include "app_config.h"
 
 #define DISP_BUF_SIZE (800 * 480 / 10)
 
@@ -80,7 +82,12 @@ int main(void)
 
     printf("UI Loop Started on Core 0.\n");
 
-    // 8. MAIN UI LOOP
+    // 8. ENGINE-OFF SHUTDOWN DETECTION
+    int engine_off_ticks = 0;
+    const int shutdown_ticks = (SHUTDOWN_DELAY_SEC * 1000000) / 16000; // Convert seconds to loop iterations
+    bool shutdown_triggered = false;
+
+    // 9. MAIN UI LOOP
     while(1) {
         // Draw the screen
         lv_timer_handler();
@@ -88,11 +95,30 @@ int main(void)
         // Fetch new data and update labels/gauges
         ui_update();
         
-        // Advance LVGL internal time by 33ms
-        lv_tick_inc(33);
+        // Engine-off shutdown: check RPM from CAN
+        if (!shutdown_triggered) {
+            pthread_mutex_lock(&data_mutex);
+            int current_rpm = v_data.rpm;
+            bool connected = v_data.can_connected;
+            pthread_mutex_unlock(&data_mutex);
+
+            if (connected && current_rpm == 0) {
+                engine_off_ticks++;
+                if (engine_off_ticks >= shutdown_ticks) {
+                    printf("ENGINE OFF for %d seconds — shutting down.\n", SHUTDOWN_DELAY_SEC);
+                    shutdown_triggered = true;
+                    system("shutdown -h now");
+                }
+            } else {
+                engine_off_ticks = 0;
+            }
+        }
+
+        // Advance LVGL internal time by 16ms
+        lv_tick_inc(16);
         
-        // Sleep to maintain ~30 FPS and let CPU rest
-        usleep(33000); 
+        // Sleep to maintain ~60 FPS for smooth gauge animation
+        usleep(16000);
 
         // Voluntary yield to ensure kernel scheduler runs smoothly
         sched_yield();

@@ -1,0 +1,43 @@
+name: Build & Deploy to ROCK 4D
+
+on:
+  push:
+    branches: [isuzu_with_ui]
+    paths:
+      - 'app/**'
+      - 'can/**'
+      - 'decode/**'
+      - 'ui/**'
+      - 'CMakeLists.txt'
+      - 'lv_conf.h'
+      - 'lv_drv_conf.h'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build application
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . -j$(nproc)
+
+      - name: Deploy and restart service
+        run: |
+          sudo cp ${{ github.workspace }}/build/isuzu_mfd /home/elg/isuzu_mfd/build/isuzu_mfd
+          sudo systemctl daemon-reload
+          sudo systemctl restart isuzu_mfd.service
+
+      - name: Verify service is running
+        run: |
+          sleep 3
+          sudo systemctl is-active isuzu_mfd.service

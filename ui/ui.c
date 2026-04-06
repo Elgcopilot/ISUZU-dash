@@ -15,18 +15,69 @@
 #define PI 3.14159265358979323846
 #endif
 
+// --- SMOOTHING ---
+// Exponential moving average alpha (0.0=frozen, 1.0=instant)
+// 0.15 at 60 FPS gives a nice ~100ms settling feel
+#define SMOOTH_ALPHA 0.15f
+
+typedef struct {
+    float rpm;
+    float speed;
+    float oil_temp;
+    float lambda;
+    float boost;
+    float duty;
+    float rail;
+    float coolant;
+    float battery_voltage;
+} SmoothedData;
+
+static SmoothedData sm = {0};  // current smoothed display values
+
+static float smooth_lerp(float current, float target, float alpha) {
+    float diff = target - current;
+    // If close enough, snap to avoid endless tiny updates
+    if (diff > -0.5f && diff < 0.5f) return target;
+    return current + diff * alpha;
+}
+
 // --- UI HANDLES ---
 static lv_obj_t *lbl_voltage;
 static lv_obj_t *batt_dot;     // Battery status indicator dot
 static int blink_counter = 0;  // For blinking animation
 
-// Gauge Handles (Linked to the BIG central numbers)
+// Page system
+#define NUM_PAGES 3
+#define PAGE_CYCLE_SEC 5
+static int current_page = 0;
+static int page_timer = 0;
+static lv_obj_t *page_cont[NUM_PAGES];       // Page containers
+static lv_obj_t *page_dot[NUM_PAGES];         // Page indicator circles
+static lv_obj_t *page_dot_lbl[NUM_PAGES];     // Labels inside circles
+
+// Page 1 gauges: RPM, Lambda, MAP, Duty, Rail, Coolant
 static lv_obj_t *arc_rpm, *lbl_rpm_val;
-static lv_obj_t *arc_lambda, *lbl_lambda_val;
-static lv_obj_t *arc_map, *lbl_map_val; 
-static lv_obj_t *arc_duty, *lbl_duty_val;
-static lv_obj_t *arc_rail, *lbl_rail_val;
-static lv_obj_t *arc_clt, *lbl_clt_val;
+static lv_obj_t *p1_arc_lambda, *p1_lbl_lambda;
+static lv_obj_t *p1_arc_map, *p1_lbl_map;
+static lv_obj_t *p1_arc_duty, *p1_lbl_duty;
+static lv_obj_t *p1_arc_rail, *p1_lbl_rail;
+static lv_obj_t *p1_arc_clt, *p1_lbl_clt;
+
+// Page 2 gauges: Speed, Lambda, MAP, Duty, Rail, Coolant
+static lv_obj_t *arc_speed, *lbl_speed_val;
+static lv_obj_t *p2_arc_lambda, *p2_lbl_lambda;
+static lv_obj_t *p2_arc_map, *p2_lbl_map;
+static lv_obj_t *p2_arc_duty, *p2_lbl_duty;
+static lv_obj_t *p2_arc_rail, *p2_lbl_rail;
+static lv_obj_t *p2_arc_clt, *p2_lbl_clt;
+
+// Page 3 gauges: Oil Temp, Lambda, MAP, Duty, Rail, Coolant
+static lv_obj_t *arc_oil, *lbl_oil_val;
+static lv_obj_t *p3_arc_lambda, *p3_lbl_lambda;
+static lv_obj_t *p3_arc_map, *p3_lbl_map;
+static lv_obj_t *p3_arc_duty, *p3_lbl_duty;
+static lv_obj_t *p3_arc_rail, *p3_lbl_rail;
+static lv_obj_t *p3_arc_clt, *p3_lbl_clt;
 
 // Demo Counter
 #ifdef DEMO_MODE
@@ -74,7 +125,7 @@ static void create_bold_gauge(lv_obj_t *parent, const char *title, int min, int 
                               int col, int row, lv_obj_t **arc_out, lv_obj_t **lbl_out) {
     
     int x_pos = GAUGE_GAP + (col * (GAUGE_WIDTH + GAUGE_GAP));
-    int y_pos = HEADER_H + GAUGE_GAP + (row * (GAUGE_HEIGHT + GAUGE_GAP)); 
+    int y_pos = GAUGE_GAP + (row * (GAUGE_HEIGHT + GAUGE_GAP)); 
 
     // 1. CONTAINER
     lv_obj_t *cont = lv_obj_create(parent);
@@ -151,18 +202,21 @@ static void create_bold_gauge(lv_obj_t *parent, const char *title, int min, int 
 
     lv_obj_t *l_min = lv_label_create(cont);
     lv_label_set_text(l_min, txt_l); 
-    lv_obj_set_style_text_color(l_min, lv_color_hex(0x888888), 0);
-    lv_obj_align(l_min, LV_ALIGN_BOTTOM_LEFT, 7, -118); 
+    lv_obj_set_style_text_font(l_min, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(l_min, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(l_min, LV_ALIGN_BOTTOM_LEFT, 5, -116); 
 
     lv_obj_t *l_max = lv_label_create(cont);
     lv_label_set_text(l_max, txt_r); 
-    lv_obj_set_style_text_color(l_max, lv_color_hex(0x888888), 0);
-    lv_obj_align(l_max, LV_ALIGN_BOTTOM_RIGHT, -3, -118);
+    lv_obj_set_style_text_font(l_max, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(l_max, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(l_max, LV_ALIGN_BOTTOM_RIGHT, -1, -116);
 
     lv_obj_t *l_mid = lv_label_create(cont);
     lv_label_set_text(l_mid, txt_m); 
-    lv_obj_set_style_text_color(l_mid, lv_color_hex(0x888888), 0);
-    lv_obj_align(l_mid, LV_ALIGN_TOP_MID, 0, Y_OFFSET + (-20)); 
+    lv_obj_set_style_text_font(l_mid, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(l_mid, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(l_mid, LV_ALIGN_TOP_MID, 0, Y_OFFSET + (-22)); 
 
     // 8. RETURN HANDLES
     *arc_out = arc;
@@ -199,53 +253,33 @@ static void create_header(lv_obj_t *parent) {
     lv_obj_set_style_border_width(batt_dot, 0, 0);
     lv_obj_align(batt_dot, LV_ALIGN_LEFT_MID, 70, 0);
 
-    // Page Numbers
-    // 1 (Red)
-    lv_obj_t *c1 = lv_obj_create(header);
-    lv_obj_set_size(c1, 30, 30);
-    lv_obj_set_style_radius(c1, 15, 0);
-    lv_obj_set_style_bg_color(c1, lv_color_hex(0xD32F2F), 0); 
-    lv_obj_set_style_border_width(c1, 0, 0);
-    lv_obj_align(c1, LV_ALIGN_CENTER, -40, 0);
-    lv_obj_clear_flag(c1, LV_OBJ_FLAG_SCROLLABLE); 
-    lv_obj_set_style_pad_all(c1, 0, 0); 
-
-    lv_obj_t *l1 = lv_label_create(c1);
-    lv_label_set_text(l1, "1");
-    lv_obj_set_style_text_color(l1, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(l1);
-
-    // 2 (Black)
-    lv_obj_t *c2 = lv_obj_create(header);
-    lv_obj_set_size(c2, 30, 30);
-    lv_obj_set_style_radius(c2, 15, 0);
-    lv_obj_set_style_bg_color(c2, lv_color_hex(0x000000), 0); 
-    lv_obj_set_style_border_width(c2, 1, 0);
-    lv_obj_set_style_border_color(c2, lv_color_hex(0x555555), 0);
-    lv_obj_align(c2, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_clear_flag(c2, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(c2, 0, 0);
-
-    lv_obj_t *l2 = lv_label_create(c2);
-    lv_label_set_text(l2, "2");
-    lv_obj_set_style_text_color(l2, lv_color_hex(0x888888), 0);
-    lv_obj_center(l2);
-
-    // 3 (Black)
-    lv_obj_t *c3 = lv_obj_create(header);
-    lv_obj_set_size(c3, 30, 30);
-    lv_obj_set_style_radius(c3, 15, 0);
-    lv_obj_set_style_bg_color(c3, lv_color_hex(0x000000), 0); 
-    lv_obj_set_style_border_width(c3, 1, 0);
-    lv_obj_set_style_border_color(c3, lv_color_hex(0x555555), 0);
-    lv_obj_align(c3, LV_ALIGN_CENTER, 40, 0);
-    lv_obj_clear_flag(c3, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(c3, 0, 0);
-
-    lv_obj_t *l3 = lv_label_create(c3);
-    lv_label_set_text(l3, "3");
-    lv_obj_set_style_text_color(l3, lv_color_hex(0x888888), 0);
-    lv_obj_center(l3);
+    // Page Number Indicators — styled like reference image
+    const int page_x[] = {-50, 0, 50};
+    for (int i = 0; i < NUM_PAGES; i++) {
+        page_dot[i] = lv_obj_create(header);
+        lv_obj_set_size(page_dot[i], 38, 38);
+        lv_obj_set_style_radius(page_dot[i], 19, 0);
+        lv_obj_set_style_pad_all(page_dot[i], 0, 0);
+        lv_obj_clear_flag(page_dot[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(page_dot[i], LV_ALIGN_CENTER, page_x[i], 0);
+        if (i == 0) {
+            // Active: solid red, no border
+            lv_obj_set_style_bg_color(page_dot[i], lv_color_hex(0xD32F2F), 0);
+            lv_obj_set_style_bg_opa(page_dot[i], LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(page_dot[i], 0, 0);
+        } else {
+            // Inactive: dark fill, grey ring border
+            lv_obj_set_style_bg_color(page_dot[i], lv_color_hex(0x1A1A1A), 0);
+            lv_obj_set_style_bg_opa(page_dot[i], LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(page_dot[i], 2, 0);
+            lv_obj_set_style_border_color(page_dot[i], lv_color_hex(0x666666), 0);
+        }
+        page_dot_lbl[i] = lv_label_create(page_dot[i]);
+        lv_label_set_text_fmt(page_dot_lbl[i], "%d", i + 1);
+        lv_obj_set_style_text_font(page_dot_lbl[i], &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(page_dot_lbl[i], (i == 0) ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x999999), 0);
+        lv_obj_center(page_dot_lbl[i]);
+    }
 
     // Settings
     lv_obj_t *l_perf = lv_label_create(header);
@@ -259,6 +293,38 @@ static void create_header(lv_obj_t *parent) {
     lv_obj_set_style_text_font(l_sub, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(l_sub, lv_color_hex(0x555555), 0);
     lv_obj_align(l_sub, LV_ALIGN_BOTTOM_RIGHT, -10, -5);
+}
+
+// --- Helper: create an invisible page container ---
+static lv_obj_t *create_page(lv_obj_t *parent) {
+    lv_obj_t *pg = lv_obj_create(parent);
+    lv_obj_set_size(pg, 800, 480 - HEADER_H);
+    lv_obj_set_pos(pg, 0, HEADER_H);
+    lv_obj_set_style_pad_all(pg, 0, 0);
+    lv_obj_set_style_bg_color(pg, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(pg, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(pg, 0, 0);
+    lv_obj_clear_flag(pg, LV_OBJ_FLAG_SCROLLABLE);
+    return pg;
+}
+
+// --- Helper: show/hide pages and update indicators ---
+static void switch_to_page(int pg) {
+    current_page = pg;
+    for (int i = 0; i < NUM_PAGES; i++) {
+        if (i == pg) {
+            lv_obj_clear_flag(page_cont[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_bg_color(page_dot[i], lv_color_hex(0xD32F2F), 0);
+            lv_obj_set_style_border_width(page_dot[i], 0, 0);
+            lv_obj_set_style_text_color(page_dot_lbl[i], lv_color_hex(0xFFFFFF), 0);
+        } else {
+            lv_obj_add_flag(page_cont[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_bg_color(page_dot[i], lv_color_hex(0x1A1A1A), 0);
+            lv_obj_set_style_border_width(page_dot[i], 2, 0);
+            lv_obj_set_style_border_color(page_dot[i], lv_color_hex(0x666666), 0);
+            lv_obj_set_style_text_color(page_dot_lbl[i], lv_color_hex(0x999999), 0);
+        }
+    }
 }
 
 void ui_init() {
@@ -275,32 +341,93 @@ void ui_init() {
     
     create_header(layout);
 
-    // Row 0
-    create_bold_gauge(layout, "ENGINE RPM", 0, 6000, "1500", "3000", "4500", 0, 0, &arc_rpm, &lbl_rpm_val);
-    create_bold_gauge(layout, "LAMBDA", 0, 100, "", "1.00", "", 1, 0, &arc_lambda, &lbl_lambda_val);
-    create_bold_gauge(layout, "MAP PSI", 0, 30, "0", "15", "30", 2, 0, &arc_map, &lbl_map_val);
+    // --- PAGE 1: RPM, Lambda, MAP / Speed, Rail, Coolant ---
+    page_cont[0] = create_page(layout);
+    create_bold_gauge(page_cont[0], "ENGINE RPM", 0, 6000, "1500", "3000", "4500", 0, 0, &arc_rpm, &lbl_rpm_val);
+    create_bold_gauge(page_cont[0], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p1_arc_lambda, &p1_lbl_lambda);
+    create_bold_gauge(page_cont[0], "MAP kPa",    0, 255,  "0",    "127",  "255",  2, 0, &p1_arc_map, &p1_lbl_map);
+    create_bold_gauge(page_cont[0], "SPEED KMH",  0, 260,  "0",    "130",  "260",  0, 1, &p1_arc_duty, &p1_lbl_duty);
+    create_bold_gauge(page_cont[0], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p1_arc_rail, &p1_lbl_rail);
+    create_bold_gauge(page_cont[0], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p1_arc_clt, &p1_lbl_clt);
 
-    // Row 1
-    create_bold_gauge(layout, "DUTY INJ %", 0, 100, "0", "50", "100", 0, 1, &arc_duty, &lbl_duty_val);
-    create_bold_gauge(layout, "RAIL PRES", 0, 200, "0", "100", "200", 1, 1, &arc_rail, &lbl_rail_val);
-    create_bold_gauge(layout, "COOLANT C", 0, 120, "0", "60", "120", 2, 1, &arc_clt, &lbl_clt_val);
+    // --- PAGE 2: Speed, Lambda, MAP / Duty, Rail, Coolant ---
+    page_cont[1] = create_page(layout);
+    create_bold_gauge(page_cont[1], "SPEED KMH",  0, 260,  "0",    "130",  "260",  0, 0, &arc_speed, &lbl_speed_val);
+    create_bold_gauge(page_cont[1], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p2_arc_lambda, &p2_lbl_lambda);
+    create_bold_gauge(page_cont[1], "MAP kPa",    0, 255,  "0",    "127",  "255",  2, 0, &p2_arc_map, &p2_lbl_map);
+    create_bold_gauge(page_cont[1], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  0, 1, &p2_arc_duty, &p2_lbl_duty);
+    create_bold_gauge(page_cont[1], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p2_arc_rail, &p2_lbl_rail);
+    create_bold_gauge(page_cont[1], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p2_arc_clt, &p2_lbl_clt);
+
+    // --- PAGE 3: Oil Temp, Lambda, MAP / Duty, Rail, Coolant ---
+    page_cont[2] = create_page(layout);
+    create_bold_gauge(page_cont[2], "OIL TEMP C", 0, 150,  "0",    "75",   "150",  0, 0, &arc_oil, &lbl_oil_val);
+    create_bold_gauge(page_cont[2], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p3_arc_lambda, &p3_lbl_lambda);
+    create_bold_gauge(page_cont[2], "MAP kPa",    0, 255,  "0",    "127",  "255",  2, 0, &p3_arc_map, &p3_lbl_map);
+    create_bold_gauge(page_cont[2], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  0, 1, &p3_arc_duty, &p3_lbl_duty);
+    create_bold_gauge(page_cont[2], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p3_arc_rail, &p3_lbl_rail);
+    create_bold_gauge(page_cont[2], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p3_arc_clt, &p3_lbl_clt);
+
+    // Start on page 1
+    switch_to_page(0);
+}
+
+// --- Helper: update a lambda gauge pair ---
+static void update_lambda(lv_obj_t *arc, lv_obj_t *lbl, float lambda) {
+    int scaled = (int)((lambda - 0.50f) * 100);
+    if (scaled < 0) scaled = 0;
+    if (scaled > 100) scaled = 100;
+    if (arc) lv_arc_set_value(arc, scaled);
+    if (lbl) {
+        int w = (int)lambda;
+        int d = (int)((lambda - w) * 100);
+        lv_label_set_text_fmt(lbl, "%d.%02d", w, abs(d));
+        if (lambda == 0.0f) {
+            lv_obj_set_style_text_color(lbl, lv_color_hex(0xD32F2F), 0); // Red
+        } else {
+            lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0); // White
+        }
+    }
+}
+
+// --- Helper: update a MAP/boost gauge pair (kPa) ---
+static void update_boost(lv_obj_t *arc, lv_obj_t *lbl, int boost_kpa) {
+    if (arc) lv_arc_set_value(arc, boost_kpa);
+    if (lbl) lv_label_set_text_fmt(lbl, "%d", boost_kpa);
+}
+
+// --- Helper: update a duty gauge pair ---
+static void update_duty(lv_obj_t *arc, lv_obj_t *lbl, float duty) {
+    if (arc) lv_arc_set_value(arc, (int)duty);
+    if (lbl) {
+        int w = (int)duty;
+        int d = (int)((duty - w) * 10);
+        lv_label_set_text_fmt(lbl, "%d.%d", w, abs(d));
+    }
+}
+
+// --- Helper: update a simple int gauge pair ---
+static void update_int_gauge(lv_obj_t *arc, lv_obj_t *lbl, int val) {
+    if (arc) lv_arc_set_value(arc, val);
+    if (lbl) lv_label_set_text_fmt(lbl, "%d", val);
 }
 
 void ui_update() {
     VehicleData d;
 
 #ifdef DEMO_MODE
-    // --- FORCE VALUES FOR TESTING ---
     static int demo_timer = 0;
     demo_timer += 50; 
     float wave = (sinf(demo_timer * 0.001f) + 1.0f) / 2.0f;
     d.rpm = 1000 + (int)(wave * 5000); 
     d.lambda = 0.50f + (wave * 1.0f);
-    d.boost = (int)(wave * 30.0f /10);
+    d.boost = (int)(wave * 30.0f / 10);
     d.duty_injection = wave * 100.0f;
     d.fuel_rail_press = wave * 200.0f;
     d.coolant_temp = (int)(40 + (wave * 80));
+    d.oil_temp = (int)(70 + (wave * 40));
     d.speed_obd = (int)(wave * 260);
+    d.battery_voltage = 12.0f + wave * 2.5f;
     d.gear = (int)(wave * 6); if(d.gear==0) d.gear=1;
     d.pedal_pos = (int)(wave * 100);
     d.brake_pos = (int)((1.0f-wave) * 100);
@@ -311,53 +438,71 @@ void ui_update() {
     } else { return; }
 #endif
 
-    // RPM
-    if (arc_rpm) lv_arc_set_value(arc_rpm, d.rpm);
+    // --- AUTO PAGE CYCLE DISABLED: show only page 1 ---
+    // page_timer++;
+    // if (page_timer >= (PAGE_CYCLE_SEC * 60)) {
+    //     page_timer = 0;
+    //     switch_to_page((current_page + 1) % NUM_PAGES);
+    // }
+
+    // --- SMOOTH INTERPOLATION toward target values ---
+    sm.rpm      = smooth_lerp(sm.rpm,      (float)d.rpm,            SMOOTH_ALPHA);
+    sm.speed    = smooth_lerp(sm.speed,    (float)d.speed_obd,      SMOOTH_ALPHA);
+    sm.oil_temp = smooth_lerp(sm.oil_temp, (float)d.oil_temp,       SMOOTH_ALPHA);
+    sm.lambda   = smooth_lerp(sm.lambda,   d.lambda,                SMOOTH_ALPHA);
+    sm.boost    = smooth_lerp(sm.boost,    (float)d.boost,          SMOOTH_ALPHA);
+    sm.duty     = smooth_lerp(sm.duty,     d.duty_injection,        SMOOTH_ALPHA);
+    sm.rail     = smooth_lerp(sm.rail,     d.fuel_rail_press,       SMOOTH_ALPHA);
+    sm.coolant  = smooth_lerp(sm.coolant,  (float)d.coolant_temp,   SMOOTH_ALPHA);
+    sm.battery_voltage = smooth_lerp(sm.battery_voltage, d.battery_voltage, SMOOTH_ALPHA);
+
+    int s_rpm     = (int)(sm.rpm + 0.5f);
+    int s_speed   = (int)(sm.speed + 0.5f);
+    int s_oil     = (int)(sm.oil_temp + 0.5f);
+    int s_coolant = (int)(sm.coolant + 0.5f);
+    int s_rail    = (int)(sm.rail + 0.5f);
+
+    // --- PAGE 1: RPM ---
+    if (arc_rpm) lv_arc_set_value(arc_rpm, s_rpm);
     if (lbl_rpm_val) {
-        lv_label_set_text_fmt(lbl_rpm_val, "%d", d.rpm);
-        if (d.rpm > 5000) lv_obj_set_style_text_color(lbl_rpm_val, lv_color_hex(0xD32F2F), 0);
+        lv_label_set_text_fmt(lbl_rpm_val, "%d", s_rpm);
+        if (s_rpm > 5000) lv_obj_set_style_text_color(lbl_rpm_val, lv_color_hex(0xD32F2F), 0);
         else lv_obj_set_style_text_color(lbl_rpm_val, lv_color_hex(0xFFFFFF), 0);
     }
+    update_lambda(p1_arc_lambda, p1_lbl_lambda, sm.lambda);
+    update_boost(p1_arc_map, p1_lbl_map, (int)(sm.boost + 0.5f));
+    if (p1_arc_duty) lv_arc_set_value(p1_arc_duty, s_speed);
+    if (p1_lbl_duty) lv_label_set_text_fmt(p1_lbl_duty, "%d", s_speed);
+    update_int_gauge(p1_arc_rail, p1_lbl_rail, s_rail);
+    update_int_gauge(p1_arc_clt, p1_lbl_clt, s_coolant);
 
-    // LAMBDA FIX
-    int lambda_scaled = (int)((d.lambda - 0.50f) * 100);
-    if (lambda_scaled < 0) lambda_scaled = 0;
-    if (lambda_scaled > 100) lambda_scaled = 100;
-    
-    if (arc_lambda) lv_arc_set_value(arc_lambda, lambda_scaled);
-    
-    if (lbl_lambda_val) {
-        int whole = (int)d.lambda;
-        int dec = (int)((d.lambda - whole) * 100);
-        lv_label_set_text_fmt(lbl_lambda_val, "%d.%02d", whole, abs(dec));
+    // --- PAGE 2: Speed ---
+    if (arc_speed) lv_arc_set_value(arc_speed, s_speed);
+    if (lbl_speed_val) lv_label_set_text_fmt(lbl_speed_val, "%d", s_speed);
+    update_lambda(p2_arc_lambda, p2_lbl_lambda, sm.lambda);
+    update_boost(p2_arc_map, p2_lbl_map, (int)(sm.boost + 0.5f));
+    update_duty(p2_arc_duty, p2_lbl_duty, sm.duty);
+    update_int_gauge(p2_arc_rail, p2_lbl_rail, s_rail);
+    update_int_gauge(p2_arc_clt, p2_lbl_clt, s_coolant);
+
+    // --- PAGE 3: Oil Temp ---
+    if (arc_oil) lv_arc_set_value(arc_oil, s_oil);
+    if (lbl_oil_val) {
+        lv_label_set_text_fmt(lbl_oil_val, "%d", s_oil);
+        if (s_oil > 120) lv_obj_set_style_text_color(lbl_oil_val, lv_color_hex(0xD32F2F), 0);
+        else lv_obj_set_style_text_color(lbl_oil_val, lv_color_hex(0xFFFFFF), 0);
     }
-
-    // BOOST
-    int boost_psi = (int)(d.boost * 14.5f); 
-    if (arc_map) lv_arc_set_value(arc_map, boost_psi);
-    if (lbl_map_val) lv_label_set_text_fmt(lbl_map_val, "%d", boost_psi);
-
-    // DUTY
-    if (arc_duty) lv_arc_set_value(arc_duty, (int)d.duty_injection);
-    if (lbl_duty_val) {
-        int w = (int)d.duty_injection;
-        int dec = (int)((d.duty_injection - w) * 10);
-        lv_label_set_text_fmt(lbl_duty_val, "%d.%d", w, abs(dec));
-    }
-
-    // RAIL
-    if (arc_rail) lv_arc_set_value(arc_rail, (int)d.fuel_rail_press);
-    if (lbl_rail_val) lv_label_set_text_fmt(lbl_rail_val, "%d", (int)d.fuel_rail_press);
-
-    // COOLANT
-    if (arc_clt) lv_arc_set_value(arc_clt, d.coolant_temp);
-    if (lbl_clt_val) lv_label_set_text_fmt(lbl_clt_val, "%d", d.coolant_temp);
+    update_lambda(p3_arc_lambda, p3_lbl_lambda, sm.lambda);
+    update_boost(p3_arc_map, p3_lbl_map, (int)(sm.boost + 0.5f));
+    update_duty(p3_arc_duty, p3_lbl_duty, sm.duty);
+    update_int_gauge(p3_arc_rail, p3_lbl_rail, s_rail);
+    update_int_gauge(p3_arc_clt, p3_lbl_clt, s_coolant);
 
     // BATTERY VOLTAGE (LVGL doesn't support %f, use integer math)
     if (lbl_voltage) {
-        if (d.battery_voltage > 0.1f) {
-            int v_whole = (int)d.battery_voltage;
-            int v_dec = (int)((d.battery_voltage - v_whole) * 10);
+        if (sm.battery_voltage > 0.1f) {
+            int v_whole = (int)sm.battery_voltage;
+            int v_dec = (int)((sm.battery_voltage - v_whole) * 10);
             if (v_dec < 0) v_dec = -v_dec;
             lv_label_set_text_fmt(lbl_voltage, "%d.%dV", v_whole, v_dec);
         } else {

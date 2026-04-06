@@ -5,4 +5,7 @@
 #define DISPLAY_HEIGHT 480
 #define CAN_IFACE      "can0"
 
+// Shutdown when engine RPM=0 for this many seconds
+#define SHUTDOWN_DELAY_SEC  5
+
 #endif
