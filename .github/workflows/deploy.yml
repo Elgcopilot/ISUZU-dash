@@ -4,6 +4,7 @@ on:
   push:
     branches: [isuzu_with_ui]
     paths:
+      - '.github/workflows/deploy.yml'
       - 'app/**'
       - 'can/**'
       - 'decode/**'
