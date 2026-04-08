@@ -82,10 +82,10 @@ int main(void)
 
     printf("UI Loop Started on Core 0.\n");
 
-    // 8. ENGINE-OFF SHUTDOWN DETECTION
-    int engine_off_ticks = 0;
-    const int shutdown_ticks = (SHUTDOWN_DELAY_SEC * 1000000) / 16000; // Convert seconds to loop iterations
-    bool shutdown_triggered = false;
+    // 8. ENGINE-OFF SHUTDOWN DETECTION (commented out)
+    // int engine_off_ticks = 0;
+    // const int shutdown_ticks = (SHUTDOWN_DELAY_SEC * 1000000) / 16000;
+    // bool shutdown_triggered = false;
 
     // 9. MAIN UI LOOP
     while(1) {
@@ -95,24 +95,24 @@ int main(void)
         // Fetch new data and update labels/gauges
         ui_update();
         
-        // Engine-off shutdown: check RPM from CAN
-        if (!shutdown_triggered) {
-            pthread_mutex_lock(&data_mutex);
-            int current_rpm = v_data.rpm;
-            bool connected = v_data.can_connected;
-            pthread_mutex_unlock(&data_mutex);
-
-            if (connected && current_rpm == 0) {
-                engine_off_ticks++;
-                if (engine_off_ticks >= shutdown_ticks) {
-                    printf("ENGINE OFF for %d seconds — shutting down.\n", SHUTDOWN_DELAY_SEC);
-                    shutdown_triggered = true;
-                    system("shutdown -h now");
-                }
-            } else {
-                engine_off_ticks = 0;
-            }
-        }
+        // Engine-off shutdown: disabled
+        // if (!shutdown_triggered) {
+        //     pthread_mutex_lock(&data_mutex);
+        //     int current_rpm = v_data.rpm;
+        //     bool connected = v_data.can_connected;
+        //     pthread_mutex_unlock(&data_mutex);
+        //
+        //     if (connected && current_rpm == 0) {
+        //         engine_off_ticks++;
+        //         if (engine_off_ticks >= shutdown_ticks) {
+        //             printf("ENGINE OFF for %d seconds — shutting down.\n", SHUTDOWN_DELAY_SEC);
+        //             shutdown_triggered = true;
+        //             system("shutdown -h now");
+        //         }
+        //     } else {
+        //         engine_off_ticks = 0;
+        //     }
+        // }
 
         // Advance LVGL internal time by 16ms
         lv_tick_inc(16);
