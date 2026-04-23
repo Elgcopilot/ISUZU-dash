@@ -132,6 +132,48 @@ if "mcp2515@0" in content:
 else:
     print("  WARNING: MCP2515 not found in DTB — CAN may not work")
 
+# ----------------------------------------------------------
+# Enable I2C8 and add sensors: MMC5983MA, ISM330DHCXTR, ADS1115
+# ----------------------------------------------------------
+import re
+
+# Find I2C8 node (i2c@2acb0000) and enable it
+i2c8_pattern = r'(i2c@2acb0000 \{[^}]*?)status = "disabled";'
+if re.search(i2c8_pattern, content):
+    content = re.sub(i2c8_pattern, r'\1status = "okay";', content)
+    print("  I2C8: enabled")
+    
+    # Add sensor nodes if not already present
+    if "mmc5983ma@30" not in content:
+        # Find the closing brace of i2c@2acb0000 and insert sensors before it
+        i2c8_close_pattern = r'(i2c@2acb0000 \{[^}]*status = "okay";[^}]*)(phandle = <0x[0-9a-f]+>;[\s\n]+)(\};)'
+        sensor_nodes = r'''\1\2
+                mmc5983ma@30 {
+                        compatible = "memsic,mmc5983ma";
+                        reg = <0x30>;
+                        status = "okay";
+                };
+
+                ism330dhcx@6b {
+                        compatible = "st,ism330dhcx";
+                        reg = <0x6b>;
+                        status = "okay";
+                };
+
+                ads1115@48 {
+                        compatible = "ti,ads1115";
+                        reg = <0x48>;
+                        #io-channel-cells = <0x01>;
+                        status = "okay";
+                };
+\3'''
+        content = re.sub(i2c8_close_pattern, sensor_nodes, content)
+        print("  I2C8 sensors: added MMC5983MA (0x30), ISM330DHCXTR (0x6b), ADS1115 (0x48)")
+    else:
+        print("  I2C8 sensors: already configured")
+else:
+    print("  WARNING: I2C8 node not found in DTB")
+
 with open("/tmp/rock4d.dts", "w") as f:
     f.write(content)
 PYEOF
