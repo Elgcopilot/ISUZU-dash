@@ -111,6 +111,21 @@ if old_node:
 else:
     print("  WARNING: mmc@2a330000 node not found — may already be patched")
 
+# Update CAN oscillator frequency: 8MHz -> 16MHz
+# MCP2515 crystal changed from 8MHz (0x7a1200) to 16MHz (0xF42400)
+old_freq = re.search(r'(can_osc \{[^}]*clock-frequency = <)(0x[0-9a-fA-F]+)(>;[^}]*\})', content, re.DOTALL)
+if old_freq:
+    current_freq = old_freq.group(2)
+    if current_freq == "0x7a1200":
+        content = content.replace("clock-frequency = <0x7a1200>;", "clock-frequency = <0xf42400>;")
+        print("  CAN oscillator: updated from 8MHz to 16MHz")
+    elif current_freq == "0xf42400":
+        print("  CAN oscillator: already 16MHz")
+    else:
+        print(f"  WARNING: CAN oscillator has unexpected frequency {current_freq}")
+else:
+    print("  WARNING: can_osc node not found in DTB")
+
 # Verify MCP2515 CAN nodes exist (spi@2ad00000)
 if "mcp2515@0" in content:
     print("  MCP2515 CAN nodes: already present in DTB (dual channel)")
