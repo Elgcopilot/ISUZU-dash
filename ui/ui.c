@@ -17,8 +17,8 @@
 
 // --- SMOOTHING ---
 // Exponential moving average alpha (0.0=frozen, 1.0=instant)
-// 0.15 at 60 FPS gives a nice ~100ms settling feel
-#define SMOOTH_ALPHA 0.15f
+// Higher value for real-time response
+#define SMOOTH_ALPHA 0.5f
 
 typedef struct {
     float rpm;
@@ -36,8 +36,8 @@ static SmoothedData sm = {0};  // current smoothed display values
 
 static float smooth_lerp(float current, float target, float alpha) {
     float diff = target - current;
-    // If close enough, snap to avoid endless tiny updates
-    if (diff > -0.5f && diff < 0.5f) return target;
+    // Snap threshold widened to reduce overshoots from sensor noise
+    if (diff > -1.0f && diff < 1.0f) return target;
     return current + diff * alpha;
 }
 
@@ -345,7 +345,7 @@ void ui_init() {
     page_cont[0] = create_page(layout);
     create_bold_gauge(page_cont[0], "ENGINE RPM", 0, 6000, "1500", "3000", "4500", 0, 0, &arc_rpm, &lbl_rpm_val);
     create_bold_gauge(page_cont[0], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p1_arc_lambda, &p1_lbl_lambda);
-    create_bold_gauge(page_cont[0], "MAP kPa",    0, 255,  "0",    "127",  "255",  2, 0, &p1_arc_map, &p1_lbl_map);
+    create_bold_gauge(page_cont[0], "BOOST kPa",  0, 300,  "0",    "150",  "300",  2, 0, &p1_arc_map, &p1_lbl_map);
     create_bold_gauge(page_cont[0], "SPEED KMH",  0, 260,  "0",    "130",  "260",  0, 1, &p1_arc_duty, &p1_lbl_duty);
     create_bold_gauge(page_cont[0], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p1_arc_rail, &p1_lbl_rail);
     create_bold_gauge(page_cont[0], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p1_arc_clt, &p1_lbl_clt);
@@ -354,7 +354,7 @@ void ui_init() {
     page_cont[1] = create_page(layout);
     create_bold_gauge(page_cont[1], "SPEED KMH",  0, 260,  "0",    "130",  "260",  0, 0, &arc_speed, &lbl_speed_val);
     create_bold_gauge(page_cont[1], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p2_arc_lambda, &p2_lbl_lambda);
-    create_bold_gauge(page_cont[1], "MAP kPa",    0, 255,  "0",    "127",  "255",  2, 0, &p2_arc_map, &p2_lbl_map);
+    create_bold_gauge(page_cont[1], "BOOST kPa",  0, 300,  "0",    "150",  "300",  2, 0, &p2_arc_map, &p2_lbl_map);
     create_bold_gauge(page_cont[1], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  0, 1, &p2_arc_duty, &p2_lbl_duty);
     create_bold_gauge(page_cont[1], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p2_arc_rail, &p2_lbl_rail);
     create_bold_gauge(page_cont[1], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p2_arc_clt, &p2_lbl_clt);
@@ -363,7 +363,7 @@ void ui_init() {
     page_cont[2] = create_page(layout);
     create_bold_gauge(page_cont[2], "OIL TEMP C", 0, 150,  "0",    "75",   "150",  0, 0, &arc_oil, &lbl_oil_val);
     create_bold_gauge(page_cont[2], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p3_arc_lambda, &p3_lbl_lambda);
-    create_bold_gauge(page_cont[2], "MAP kPa",    0, 255,  "0",    "127",  "255",  2, 0, &p3_arc_map, &p3_lbl_map);
+    create_bold_gauge(page_cont[2], "BOOST kPa",  0, 300,  "0",    "150",  "300",  2, 0, &p3_arc_map, &p3_lbl_map);
     create_bold_gauge(page_cont[2], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  0, 1, &p3_arc_duty, &p3_lbl_duty);
     create_bold_gauge(page_cont[2], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p3_arc_rail, &p3_lbl_rail);
     create_bold_gauge(page_cont[2], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p3_arc_clt, &p3_lbl_clt);

@@ -6,6 +6,8 @@
 #include "styles.h"
 #include "can_mgr.h"
 #include "signals.h"
+#include "ads1115_pressure.h"
+#include "lambda_i2c.h"
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
@@ -15,6 +17,68 @@
 #include "app_config.h"
 
 #define DISP_BUF_SIZE (800 * 480 / 10)
+
+// ADS1115 Pressure Sensor Thread
+void *ads1115_thread(void *arg) {
+    (void)arg;
+    
+    // Initialize ADS1115
+    if (!ads1115_init()) {
+        printf("Failed to initialize ADS1115, pressure sensor disabled\n");
+        return NULL;
+    }
+    
+    printf("ADS1115 pressure sensor thread started\n");
+    
+    while(1) {
+        // Read boost pressure from ADS1115 AIN1
+        float boost_kpa = ads1115_read_boost_kpa();
+        
+        if (boost_kpa >= 0.0f) {
+            // Update boost value directly - UI smoothing handles variations
+            pthread_mutex_lock(&data_mutex);
+            v_data.boost = (int)(boost_kpa + 0.5f);  // Round to nearest int
+            pthread_mutex_unlock(&data_mutex);
+        }
+        
+        // Read at 20 Hz (50ms interval)
+        usleep(50000);
+    }
+    
+    ads1115_close();
+    return NULL;
+}
+
+// Lambda Sensor I2C Thread
+void *lambda_thread(void *arg) {
+    (void)arg;
+    
+    // Initialize Lambda I2C sensor
+    if (!lambda_init()) {
+        printf("Failed to initialize Lambda sensor, lambda disabled\n");
+        return NULL;
+    }
+    
+    printf("Lambda sensor thread started\n");
+    
+    while(1) {
+        // Read lambda value from Arduino I2C slave
+        float lambda_value = lambda_read();
+        
+        if (lambda_value >= 0.0f) {
+            // Update lambda value directly
+            pthread_mutex_lock(&data_mutex);
+            v_data.lambda = lambda_value;
+            pthread_mutex_unlock(&data_mutex);
+        }
+        
+        // Read at 10 Hz (100ms interval)
+        usleep(100000);
+    }
+    
+    lambda_close();
+    return NULL;
+}
 
 int main(void)
 {
@@ -58,7 +122,17 @@ int main(void)
     ui_init();
 
     // 7. START DATA THREADS
-    pthread_t rx_th, tx_th;
+    pthread_t rx_th, tx_th, ads_th, lambda_th;
+    
+    // Start ADS1115 Pressure Sensor Thread (always runs)
+    pthread_create(&ads_th, NULL, ads1115_thread, NULL);
+    pthread_setname_np(ads_th, "ads1115");
+    printf("ADS1115 pressure sensor thread started\n");
+    
+    // Start Lambda Sensor Thread (always runs)
+    pthread_create(&lambda_th, NULL, lambda_thread, NULL);
+    pthread_setname_np(lambda_th, "lambda");
+    printf("Lambda sensor thread started\n");
     
     // Check if the CAN interface exists in the system
     if(access("/sys/class/net/can0", F_OK) == 0) {

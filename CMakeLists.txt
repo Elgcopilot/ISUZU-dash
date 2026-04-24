@@ -39,6 +39,8 @@ add_subdirectory(lv_drivers)
 # Source files
 set(SOURCES
     app/main.c
+    app/ads1115_pressure.c
+    app/lambda_i2c.c
     can/can_mgr.c
     decode/signals.c
     ui/ui.c
