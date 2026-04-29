@@ -41,6 +41,12 @@ typedef struct {
     float imu_temp;        // ISM330DHCXTR temperature sensor
     float g_force_lat;     // Lateral G-force (ISM330DHCXTR)
     float g_force_long;    // Longitudinal G-force (ISM330DHCXTR)
+    float gyro_x;          // Gyroscope X (ISM330DHCXTR)
+    float gyro_y;          // Gyroscope Y (ISM330DHCXTR)
+    float gyro_z;          // Gyroscope Z (ISM330DHCXTR)
+    float mag_x;           // Magnetometer X (MMC5983MA)
+    float mag_y;           // Magnetometer Y (MMC5983MA)
+    float mag_z;           // Magnetometer Z (MMC5983MA)
     int gps_satellites;    // Number of GPS satellites
     GPSData gps_data;      // GPS satellite data for sky plot
     

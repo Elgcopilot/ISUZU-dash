@@ -8,6 +8,9 @@ typedef struct {
     float accel_x;  // Lateral acceleration (G)
     float accel_y;  // Longitudinal acceleration (G)
     float accel_z;  // Vertical acceleration (G)
+    float gyro_x;   // Gyroscope X (deg/s)
+    float gyro_y;   // Gyroscope Y (deg/s)
+    float gyro_z;   // Gyroscope Z (deg/s)
     float temp;     // Temperature (°C)
 } IMUData;
 

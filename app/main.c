@@ -10,6 +10,9 @@
 #include "lambda_i2c.h"
 #include "gps_m9n.h"
 #include "ism330_imu.h"
+#include "mmc5983ma_mag.h"
+#include "mqtt_client.h"
+#include "config_parser.h"
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
@@ -149,6 +152,9 @@ void *imu_thread(void *arg) {
         pthread_mutex_lock(&data_mutex);
         v_data.g_force_lat = temp_imu.accel_x;   // Lateral acceleration
         v_data.g_force_long = temp_imu.accel_y;  // Longitudinal acceleration
+        v_data.gyro_x = temp_imu.gyro_x;         // Gyroscope X
+        v_data.gyro_y = temp_imu.gyro_y;         // Gyroscope Y
+        v_data.gyro_z = temp_imu.gyro_z;         // Gyroscope Z
         v_data.imu_temp = temp_imu.temp;         // IMU temperature
         pthread_mutex_unlock(&data_mutex);
         
@@ -166,6 +172,156 @@ void *imu_thread(void *arg) {
     
     if (log) fclose(log);
     imu_close();
+    return NULL;
+}
+
+// MMC5983MA Magnetometer Thread
+void *mag_thread(void *arg) {
+    (void)arg;
+    
+    // Initialize MMC5983MA (will create /tmp/mag_debug.log)
+    if (!mag_init()) {
+        printf("Failed to initialize MMC5983MA magnetometer, mag disabled\n");
+        return NULL;
+    }
+    
+    printf("MMC5983MA magnetometer thread started\n");
+    
+    // Append to log file for data samples
+    FILE *log = fopen("/tmp/mag_debug.log", "a");
+    if (log) {
+        fprintf(log, "\n=== Starting data acquisition ===\n");
+        fflush(log);
+    }
+    
+    int sample_count = 0;
+    while(1) {
+        // Read magnetometer data
+        MagData temp_mag;
+        mag_update(&temp_mag);
+        
+        // Update global vehicle data
+        pthread_mutex_lock(&data_mutex);
+        v_data.mag_x = temp_mag.mag_x;
+        v_data.mag_y = temp_mag.mag_y;
+        v_data.mag_z = temp_mag.mag_z;
+        pthread_mutex_unlock(&data_mutex);
+        
+        // Log first 5 samples for debugging
+        if (log && sample_count < 5) {
+            fprintf(log, "Sample %d: X=%.3f Y=%.3f Z=%.3f Gauss\n", 
+                    sample_count, temp_mag.mag_x, temp_mag.mag_y, temp_mag.mag_z);
+            fflush(log);
+            sample_count++;
+        }
+        
+        // Read at 50 Hz (20ms interval)
+        usleep(20000);
+    }
+    
+    if (log) fclose(log);
+    mag_close();
+    return NULL;
+}
+
+// MQTT Telemetry Thread
+void *mqtt_thread(void *arg) {
+    (void)arg;
+    
+    FILE *log = fopen("/tmp/mqtt_debug.log", "w");
+    if (log) {
+        fprintf(log, "MQTT thread starting...\n");
+        fflush(log);
+    }
+    
+    // Load configuration
+    Config config;
+    if (log) {
+        fprintf(log, "MQTT: Loading config from /mnt/candata/config.txt\n");
+        fflush(log);
+    }
+    
+    if (!config_load("/mnt/candata/config.txt", &config)) {
+        if (log) {
+            fprintf(log, "Failed to load config.txt, MQTT disabled\n");
+            fclose(log);
+        }
+        printf("Failed to load config.txt, MQTT disabled\n");
+        fflush(stdout);
+        return NULL;
+    }
+    
+    if (log) {
+        fprintf(log, "MQTT: Config loaded successfully\n");
+        fprintf(log, "Server: %s:%d\n", config.server, config.port);
+        fflush(log);
+    }
+    
+    config_print(&config);
+    
+    // Initialize MQTT client
+    if (log) {
+        fprintf(log, "MQTT: Initializing client...\n");
+        fflush(log);
+    }
+    
+    if (!mqtt_init(&config)) {
+        if (log) {
+            fprintf(log, "Failed to initialize MQTT, telemetry disabled\n");
+            fclose(log);
+        }
+        printf("Failed to initialize MQTT, telemetry disabled\n");
+        return NULL;
+    }
+    
+    if (log) {
+        fprintf(log, "MQTT telemetry thread started successfully\n");
+        fflush(log);
+    }
+    printf("MQTT telemetry thread started\n");
+    
+    // Publish telemetry at 25 Hz (every 40ms)
+    int publish_count = 0;
+    while(1) {
+        // Copy vehicle data with mutex protection
+        VehicleData local_data;
+        pthread_mutex_lock(&data_mutex);
+        local_data = v_data;
+        pthread_mutex_unlock(&data_mutex);
+        
+        // Publish to MQTT broker
+        if (mqtt_is_connected()) {
+            if (mqtt_publish_telemetry(&local_data, &config)) {
+                publish_count++;
+                if (log && (publish_count % 100 == 0)) {
+                    fprintf(log, "MQTT: Published %d messages\n", publish_count);
+                    fflush(log);
+                }
+            } else {
+                if (log) {
+                    fprintf(log, "MQTT: Failed to publish telemetry\n");
+                    fflush(log);
+                }
+                printf("MQTT: Failed to publish telemetry\n");
+            }
+        } else {
+            // Try to reconnect
+            if (log) {
+                fprintf(log, "MQTT: Reconnecting...\n");
+                fflush(log);
+            }
+            printf("MQTT: Reconnecting...\n");
+            mqtt_cleanup();
+            sleep(5);
+            mqtt_init(&config);
+        }
+        
+        // Publish at 25 Hz (40ms interval)
+        usleep(40000);
+    }
+    
+    if (log) fclose(log);
+    mqtt_cleanup();
     return NULL;
 }
 
@@ -211,7 +367,7 @@ int main(void)
     ui_init();
 
     // 7. START DATA THREADS
-    pthread_t rx_th, tx_th, ads_th, lambda_th, gps_th, imu_th;
+    pthread_t rx_th, tx_th, ads_th, lambda_th, gps_th, imu_th, mag_th, mqtt_th;
     
     // Start ADS1115 Pressure Sensor Thread (always runs)
     pthread_create(&ads_th, NULL, ads1115_thread, NULL);
@@ -232,6 +388,16 @@ int main(void)
     pthread_create(&imu_th, NULL, imu_thread, NULL);
     pthread_setname_np(imu_th, "ism330_imu");
     printf("ISM330DHCXTR IMU thread started\n");
+    
+    // Start MMC5983MA Magnetometer Thread (always runs)
+    pthread_create(&mag_th, NULL, mag_thread, NULL);
+    pthread_setname_np(mag_th, "mmc5983ma");
+    printf("MMC5983MA magnetometer thread started\n");
+    
+    // Start MQTT Telemetry Thread (always runs)
+    pthread_create(&mqtt_th, NULL, mqtt_thread, NULL);
+    pthread_setname_np(mqtt_th, "mqtt_pub");
+    printf("MQTT telemetry thread started\n");
     
     // Check if the CAN interface exists in the system
     if(access("/sys/class/net/can0", F_OK) == 0) {

@@ -43,6 +43,9 @@ set(SOURCES
     app/lambda_i2c.c
     app/gps_m9n.c
     app/ism330_imu.c
+    app/mmc5983ma_mag.c
+    app/mqtt_client.c
+    app/config_parser.c
     can/can_mgr.c
     decode/signals.c
     ui/ui.c
@@ -51,5 +54,5 @@ set(SOURCES
 
 add_executable(isuzu_mfd ${SOURCES})
 
-# Link libraries (m = math, pthread = threads)
-target_link_libraries(isuzu_mfd lvgl lv_drivers m pthread)
+# Link libraries (m = math, pthread = threads, paho-mqtt3c = MQTT client)
+target_link_libraries(isuzu_mfd lvgl lv_drivers m pthread paho-mqtt3c)

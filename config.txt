@@ -1,5 +1,5 @@
-#SERVER:elg-platform.duckdns.org
-#PORT:1883
+#SERVER:elg-platform.trueddns.com
+#PORT:37597
 #MQTT_USER:s63
 #MQTT_PASSWORD:57b468d811f8
 #APN:internet

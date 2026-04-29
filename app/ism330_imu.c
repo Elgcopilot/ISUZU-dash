@@ -17,6 +17,12 @@
 #define CTRL2_G         0x11  // Gyroscope control
 #define OUT_TEMP_L      0x20  // Temperature output low
 #define OUT_TEMP_H      0x21  // Temperature output high
+#define OUTX_L_G        0x22  // Gyroscope X-axis low
+#define OUTX_H_G        0x23  // Gyroscope X-axis high
+#define OUTY_L_G        0x24  // Gyroscope Y-axis low
+#define OUTY_H_G        0x25  // Gyroscope Y-axis high
+#define OUTZ_L_G        0x26  // Gyroscope Z-axis low
+#define OUTZ_H_G        0x27  // Gyroscope Z-axis high
 #define OUTX_L_A        0x28  // Accelerometer X-axis low
 #define OUTX_H_A        0x29  // Accelerometer X-axis high
 #define OUTY_L_A        0x2A  // Accelerometer Y-axis low
@@ -98,9 +104,18 @@ bool imu_init(void) {
         return false;
     }
 
+    // Configure gyroscope
+    // CTRL2_G: ODR=416Hz, ±250 dps full scale
+    if (!write_register(CTRL2_G, 0x60)) {  // 0110 0000: 416Hz, ±250 dps
+        printf("Failed to configure IMU gyroscope\n");
+        close(imu_fd);
+        imu_fd = -1;
+        return false;
+    }
+
     usleep(10000);  // Wait 10ms for sensor to stabilize
 
-    printf("ISM330DHCXTR IMU initialized successfully\n");
+    printf("ISM330DHCXTR IMU initialized successfully (accel + gyro)\n");
     return true;
 }
 
@@ -115,6 +130,7 @@ void imu_update(IMUData *imu_data) {
     if (imu_fd < 0 || !imu_data) return;
 
     uint8_t accel_data[6];
+    uint8_t gyro_data[6];
     uint8_t temp_data[2];
 
     // Read accelerometer data (6 bytes: X, Y, Z)
@@ -129,6 +145,20 @@ void imu_update(IMUData *imu_data) {
         imu_data->accel_x = accel_x_raw * 0.000061f;
         imu_data->accel_y = accel_y_raw * 0.000061f;
         imu_data->accel_z = accel_z_raw * 0.000061f;
+    }
+
+    // Read gyroscope data (6 bytes: X, Y, Z)
+    if (read_registers(OUTX_L_G, gyro_data, 6)) {
+        // Combine low and high bytes (little-endian)
+        int16_t gyro_x_raw = (int16_t)((gyro_data[1] << 8) | gyro_data[0]);
+        int16_t gyro_y_raw = (int16_t)((gyro_data[3] << 8) | gyro_data[2]);
+        int16_t gyro_z_raw = (int16_t)((gyro_data[5] << 8) | gyro_data[4]);
+
+        // Convert to deg/s (±250 dps range, 16-bit resolution)
+        // Sensitivity: 8.75 mdps/LSB = 0.00875 dps/LSB
+        imu_data->gyro_x = gyro_x_raw * 0.00875f;
+        imu_data->gyro_y = gyro_y_raw * 0.00875f;
+        imu_data->gyro_z = gyro_z_raw * 0.00875f;
     }
 
     // Read temperature data (2 bytes)
