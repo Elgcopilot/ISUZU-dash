@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include "../app/gps_m9n.h"
 
 typedef struct {
     // Page 1
@@ -35,6 +36,18 @@ typedef struct {
     float maf;
     float fuel_rate;
     float battery_voltage; // 12V battery (OBD PID 0x42)
+    
+    // Sensors
+    float imu_temp;        // ISM330DHCXTR temperature sensor
+    float g_force_lat;     // Lateral G-force (ISM330DHCXTR)
+    float g_force_long;    // Longitudinal G-force (ISM330DHCXTR)
+    int gps_satellites;    // Number of GPS satellites
+    GPSData gps_data;      // GPS satellite data for sky plot
+    
+    // Racing telemetry
+    float delta_time;      // Delta time vs reference lap (negative = faster)
+    float current_lap_time; // Current lap time in seconds
+    float reference_lap_time; // Reference lap time in seconds
     
     // Status
     bool can_connected;

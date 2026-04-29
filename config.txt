@@ -1,0 +1,10 @@
+#SERVER:elg-platform.duckdns.org
+#PORT:1883
+#MQTT_USER:s63
+#MQTT_PASSWORD:57b468d811f8
+#APN:internet
+#CAR-NUMBER:41
+#DEVICE:1
+#EVENT:pt
+#CLASS:isuzu
+

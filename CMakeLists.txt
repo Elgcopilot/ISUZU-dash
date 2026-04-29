@@ -41,6 +41,8 @@ set(SOURCES
     app/main.c
     app/ads1115_pressure.c
     app/lambda_i2c.c
+    app/gps_m9n.c
+    app/ism330_imu.c
     can/can_mgr.c
     decode/signals.c
     ui/ui.c

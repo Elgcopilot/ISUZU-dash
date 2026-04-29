@@ -2,6 +2,7 @@
 #include "styles.h"
 #include "signals.h"
 #include "lvgl.h"
+#include "../app/gps_m9n.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -24,12 +25,15 @@ typedef struct {
     float rpm;
     float speed;
     float oil_temp;
+    float oil_pressure;
     float lambda;
     float boost;
     float duty;
     float rail;
     float coolant;
     float battery_voltage;
+    float imu_temp;
+    float gps_satellites;
 } SmoothedData;
 
 static SmoothedData sm = {0};  // current smoothed display values
@@ -63,21 +67,23 @@ static lv_obj_t *p1_arc_duty, *p1_lbl_duty;
 static lv_obj_t *p1_arc_rail, *p1_lbl_rail;
 static lv_obj_t *p1_arc_clt, *p1_lbl_clt;
 
-// Page 2 gauges: Speed, Lambda, MAP, Duty, Rail, Coolant
-static lv_obj_t *arc_speed, *lbl_speed_val;
-static lv_obj_t *p2_arc_lambda, *p2_lbl_lambda;
-static lv_obj_t *p2_arc_map, *p2_lbl_map;
-static lv_obj_t *p2_arc_duty, *p2_lbl_duty;
+// Page 2 gauges: Coolant, Air Temp, Oil Temp, Rail Pressure, Duty, GPS Sky Plot
+static lv_obj_t *arc_coolant_main, *lbl_coolant_main;
+static lv_obj_t *p2_arc_air_temp, *p2_lbl_air_temp;
+static lv_obj_t *p2_arc_oil_temp, *p2_lbl_oil_temp;
 static lv_obj_t *p2_arc_rail, *p2_lbl_rail;
-static lv_obj_t *p2_arc_clt, *p2_lbl_clt;
+static lv_obj_t *p2_arc_duty, *p2_lbl_duty;
+static lv_obj_t *p2_gps_skyplot;  // Sky plot canvas
+static lv_obj_t *p2_gps_title;  // GPS title with satellite count
 
-// Page 3 gauges: Oil Temp, Lambda, MAP, Duty, Rail, Coolant
-static lv_obj_t *arc_oil, *lbl_oil_val;
-static lv_obj_t *p3_arc_lambda, *p3_lbl_lambda;
-static lv_obj_t *p3_arc_map, *p3_lbl_map;
-static lv_obj_t *p3_arc_duty, *p3_lbl_duty;
-static lv_obj_t *p3_arc_rail, *p3_lbl_rail;
+// Page 3 gauges: GPS LAT, GPS LONG, GPS TIME, G-Force LAT, G-Force LONG, Delta Time
+static lv_obj_t *arc_gps_lat, *lbl_gps_lat;
+static lv_obj_t *p3_arc_gps_long, *p3_lbl_gps_long;
+static lv_obj_t *p3_arc_gps_time, *p3_lbl_gps_time;
+static lv_obj_t *p3_arc_gforce_lat, *p3_lbl_gforce_lat;
+static lv_obj_t *p3_arc_gforce_long, *p3_lbl_gforce_long;
 static lv_obj_t *p3_arc_clt, *p3_lbl_clt;
+static lv_obj_t *p3_lbl_delta_time;  // Delta time display
 
 // Demo Counter
 #ifdef DEMO_MODE
@@ -327,6 +333,181 @@ static void switch_to_page(int pg) {
     }
 }
 
+// --- Helper: create simple text display (no gauge) ---
+static void create_text_display(lv_obj_t *parent, const char *title, int col, int row, lv_obj_t **lbl_out) {
+    int x_pos = GAUGE_GAP + (col * (GAUGE_WIDTH + GAUGE_GAP));
+    int y_pos = GAUGE_GAP + (row * (GAUGE_HEIGHT + GAUGE_GAP));
+    
+    // Container
+    lv_obj_t *cont = lv_obj_create(parent);
+    lv_obj_set_size(cont, GAUGE_WIDTH, GAUGE_HEIGHT);
+    lv_obj_set_pos(cont, x_pos, y_pos);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(cont, 0, 0);
+    lv_obj_set_style_bg_color(cont, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(cont, 1, 0);
+    lv_obj_set_style_border_color(cont, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_radius(cont, 10, 0);
+    
+    // Title
+    lv_obj_t *l_title = lv_label_create(cont);
+    lv_label_set_text(l_title, title);
+    lv_obj_set_style_text_font(l_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(l_title, lv_color_hex(0x888888), 0);
+    lv_obj_align(l_title, LV_ALIGN_TOP_MID, 0, 15);
+    
+    // Value label (large centered text)
+    lv_obj_t *lbl_val = lv_label_create(cont);
+    lv_label_set_text(lbl_val, "--");
+    lv_obj_set_style_text_font(lbl_val, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(lbl_val, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(lbl_val, LV_ALIGN_CENTER, 0, 10);
+    
+    *lbl_out = lbl_val;
+}
+
+// --- GPS Sky Plot Functions ---
+// Convert polar coordinates (azimuth, elevation) to Cartesian (x, y)
+static void polar_to_cartesian(int azimuth, int elevation, int center_x, int center_y, int radius, int *x, int *y) {
+    // Elevation: 0° = horizon (radius), 90° = zenith (center)
+    // Azimuth: 0° = North (top), 90° = East (right), 180° = South (bottom), 270° = West (left)
+    
+    float r = radius * (1.0f - (float)elevation / 90.0f);  // Distance from center
+    float angle_rad = (float)(azimuth - 90) * PI / 180.0f;  // Rotate so 0° is North (top)
+    
+    *x = center_x + (int)(r * cosf(angle_rad));
+    *y = center_y + (int)(r * sinf(angle_rad));
+}
+
+// Create GPS Sky Plot widget
+static lv_obj_t *create_gps_skyplot(lv_obj_t *parent, int col, int row) {
+    int x_pos = GAUGE_GAP + (col * (GAUGE_WIDTH + GAUGE_GAP));
+    int y_pos = GAUGE_GAP + (row * (GAUGE_HEIGHT + GAUGE_GAP));
+    
+    // Container
+    lv_obj_t *cont = lv_obj_create(parent);
+    lv_obj_set_size(cont, GAUGE_WIDTH, GAUGE_HEIGHT);
+    lv_obj_set_pos(cont, x_pos, y_pos);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(cont, 0, 0);
+    lv_obj_set_style_bg_color(cont, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(cont, 1, 0);
+    lv_obj_set_style_border_color(cont, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_radius(cont, 10, 0);
+    
+    // Title with satellite count
+    p2_gps_title = lv_label_create(cont);
+    lv_label_set_text(p2_gps_title, "GPS SATELLITES : 0");
+    lv_obj_set_style_text_font(p2_gps_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(p2_gps_title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(p2_gps_title, LV_ALIGN_BOTTOM_MID, 0, -5);
+    
+    int plot_size = 170;  // Sky plot diameter
+    int cx = GAUGE_WIDTH / 2;
+    int cy = GAUGE_HEIGHT / 2 - 5;  // Center with title at bottom
+    int radius = plot_size / 2;
+    
+    // Draw 3 elevation rings (30°, 60°, 90°)
+    for (int i = 1; i <= 3; i++) {
+        lv_obj_t *ring = lv_obj_create(cont);
+        int ring_radius = (radius * i) / 3;
+        lv_obj_set_size(ring, ring_radius * 2, ring_radius * 2);
+        lv_obj_align(ring, LV_ALIGN_CENTER, 0, -5);
+        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(ring, 1, 0);
+        lv_obj_set_style_border_color(ring, lv_color_hex(0x444444), 0);
+        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+        lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
+    }
+    
+    // Draw N, E, S, W axis lines
+    lv_point_t line_points_h[2] = {{cx - radius, cy}, {cx + radius, cy}};
+    lv_point_t line_points_v[2] = {{cx, cy - radius}, {cx, cy + radius}};
+    
+    lv_obj_t *line_h = lv_line_create(cont);
+    lv_line_set_points(line_h, line_points_h, 2);
+    lv_obj_set_style_line_width(line_h, 1, 0);
+    lv_obj_set_style_line_color(line_h, lv_color_hex(0x444444), 0);
+    
+    lv_obj_t *line_v = lv_line_create(cont);
+    lv_line_set_points(line_v, line_points_v, 2);
+    lv_obj_set_style_line_width(line_v, 1, 0);
+    lv_obj_set_style_line_color(line_v, lv_color_hex(0x444444), 0);
+    
+    // Draw N, E, S, W labels
+    const char *directions[] = {"N", "E", "S", "W"};
+    int dir_offsets[][2] = {{0, -radius - 15}, {radius + 10, 0}, {0, radius + 15}, {-radius - 15, 0}};
+    
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *lbl = lv_label_create(cont);
+        lv_label_set_text(lbl, directions[i]);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x888888), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_align(lbl, LV_ALIGN_CENTER, dir_offsets[i][0], dir_offsets[i][1] - 5);
+    }
+    
+    return cont;
+}
+
+// Update GPS Sky Plot with satellite data
+static void update_gps_skyplot(lv_obj_t *skyplot, GPSData *gps_data) {
+    if (!skyplot) return;
+    
+    // Update title with satellite count
+    if (p2_gps_title) {
+        char title_text[64];
+        snprintf(title_text, sizeof(title_text), "GPS SATELLITES : %d", gps_data->num_satellites);
+        lv_label_set_text(p2_gps_title, title_text);
+    }
+    
+    // Remove old satellite markers
+    uint32_t child_count = lv_obj_get_child_cnt(skyplot);
+    for (uint32_t i = child_count; i > 7; i--) {  // Keep first 7 children (rings, lines, labels, title)
+        lv_obj_t *child = lv_obj_get_child(skyplot, i - 1);
+        lv_obj_del(child);
+    }
+    
+    int cx = GAUGE_WIDTH / 2;
+    int cy = GAUGE_HEIGHT / 2 - 5;
+    int radius = 85;  // Half of plot_size
+    
+    // Draw satellites
+    for (int i = 0; i < MAX_SATELLITES; i++) {
+        if (gps_data->sats[i].prn == 0) continue;
+        
+        int x, y;
+        polar_to_cartesian(gps_data->sats[i].azimuth, gps_data->sats[i].elevation, cx, cy, radius, &x, &y);
+        
+        // Determine color based on signal strength and usage
+        lv_color_t sat_color;
+        if (!gps_data->sats[i].used) {
+            sat_color = lv_color_hex(0xFF0000);  // Red = not used
+        } else if (gps_data->sats[i].cn0 < 25) {
+            sat_color = lv_color_hex(0xFFFF00);  // Yellow = weak signal
+        } else {
+            sat_color = lv_color_hex(0x00FF00);  // Green = strong signal, used
+        }
+        
+        // Determine size based on signal strength
+        int sat_size = 6 + (gps_data->sats[i].cn0 / 10);
+        if (sat_size < 6) sat_size = 6;
+        if (sat_size > 14) sat_size = 14;
+        
+        // Create satellite marker
+        lv_obj_t *sat = lv_obj_create(skyplot);
+        lv_obj_set_size(sat, sat_size, sat_size);
+        lv_obj_set_pos(sat, x - sat_size/2, y - sat_size/2);
+        lv_obj_set_style_bg_color(sat, sat_color, 0);
+        lv_obj_set_style_bg_opa(sat, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(sat, 1, 0);
+        lv_obj_set_style_border_color(sat, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_radius(sat, LV_RADIUS_CIRCLE, 0);
+        lv_obj_clear_flag(sat, LV_OBJ_FLAG_SCROLLABLE);
+    }
+}
+
 void ui_init() {
     styles_init();
     lv_obj_t *scr = lv_scr_act();
@@ -346,30 +527,38 @@ void ui_init() {
     create_bold_gauge(page_cont[0], "ENGINE RPM", 0, 6000, "1500", "3000", "4500", 0, 0, &arc_rpm, &lbl_rpm_val);
     create_bold_gauge(page_cont[0], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p1_arc_lambda, &p1_lbl_lambda);
     create_bold_gauge(page_cont[0], "BOOST kPa",  0, 300,  "0",    "150",  "300",  2, 0, &p1_arc_map, &p1_lbl_map);
-    create_bold_gauge(page_cont[0], "SPEED KMH",  0, 260,  "0",    "130",  "260",  0, 1, &p1_arc_duty, &p1_lbl_duty);
-    create_bold_gauge(page_cont[0], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p1_arc_rail, &p1_lbl_rail);
-    create_bold_gauge(page_cont[0], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p1_arc_clt, &p1_lbl_clt);
+    create_bold_gauge(page_cont[0], "SPEED km/h", 0, 260,  "0",    "130",  "260",  0, 1, &p1_arc_duty, &p1_lbl_duty);
+    create_bold_gauge(page_cont[0], "RAIL MPa",   0, 200,  "0",    "100",  "200",  1, 1, &p1_arc_rail, &p1_lbl_rail);
+    create_bold_gauge(page_cont[0], "COOLANT °C", 0, 120,  "0",    "60",   "120",  2, 1, &p1_arc_clt, &p1_lbl_clt);
 
-    // --- PAGE 2: Speed, Lambda, MAP / Duty, Rail, Coolant ---
+    // --- PAGE 2: Coolant, Air Temp, Oil Temp / Rail Pressure, Duty, GPS ---
     page_cont[1] = create_page(layout);
-    create_bold_gauge(page_cont[1], "SPEED KMH",  0, 260,  "0",    "130",  "260",  0, 0, &arc_speed, &lbl_speed_val);
-    create_bold_gauge(page_cont[1], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p2_arc_lambda, &p2_lbl_lambda);
-    create_bold_gauge(page_cont[1], "BOOST kPa",  0, 300,  "0",    "150",  "300",  2, 0, &p2_arc_map, &p2_lbl_map);
-    create_bold_gauge(page_cont[1], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  0, 1, &p2_arc_duty, &p2_lbl_duty);
-    create_bold_gauge(page_cont[1], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p2_arc_rail, &p2_lbl_rail);
-    create_bold_gauge(page_cont[1], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p2_arc_clt, &p2_lbl_clt);
+    create_bold_gauge(page_cont[1], "COOLANT °C", 0, 120,  "0",    "60",   "120",  0, 0, &arc_coolant_main, &lbl_coolant_main);
+    create_bold_gauge(page_cont[1], "AIR TEMP °C",0, 100,  "0",    "50",   "100",  1, 0, &p2_arc_air_temp, &p2_lbl_air_temp);
+    create_bold_gauge(page_cont[1], "OIL TEMP °C",0, 150,  "0",    "75",   "150",  2, 0, &p2_arc_oil_temp, &p2_lbl_oil_temp);
+    create_bold_gauge(page_cont[1], "RAIL MPa",   0, 200,  "0",    "100",  "200",  0, 1, &p2_arc_rail, &p2_lbl_rail);
+    create_bold_gauge(page_cont[1], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  1, 1, &p2_arc_duty, &p2_lbl_duty);
+    p2_gps_skyplot = create_gps_skyplot(page_cont[1], 2, 1);  // GPS Sky Plot
 
-    // --- PAGE 3: Oil Temp, Lambda, MAP / Duty, Rail, Coolant ---
+    // --- PAGE 3: GPS LAT, GPS LONG, GPS TIME / G-Force LAT, G-Force LONG, Delta Time ---
     page_cont[2] = create_page(layout);
-    create_bold_gauge(page_cont[2], "OIL TEMP C", 0, 150,  "0",    "75",   "150",  0, 0, &arc_oil, &lbl_oil_val);
-    create_bold_gauge(page_cont[2], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p3_arc_lambda, &p3_lbl_lambda);
-    create_bold_gauge(page_cont[2], "BOOST kPa",  0, 300,  "0",    "150",  "300",  2, 0, &p3_arc_map, &p3_lbl_map);
-    create_bold_gauge(page_cont[2], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  0, 1, &p3_arc_duty, &p3_lbl_duty);
-    create_bold_gauge(page_cont[2], "RAIL PRES",  0, 200,  "0",    "100",  "200",  1, 1, &p3_arc_rail, &p3_lbl_rail);
-    create_bold_gauge(page_cont[2], "COOLANT C",  0, 120,  "0",    "60",   "120",  2, 1, &p3_arc_clt, &p3_lbl_clt);
+    create_text_display(page_cont[2], "GPS LAT °",      0, 0, &lbl_gps_lat);
+    create_text_display(page_cont[2], "GPS LONG °",     1, 0, &p3_lbl_gps_long);
+    create_text_display(page_cont[2], "GPS TIME",       2, 0, &p3_lbl_gps_time);
+    create_text_display(page_cont[2], "G-FORCE LAT",    0, 1, &p3_lbl_gforce_lat);
+    create_text_display(page_cont[2], "G-FORCE LONG",   1, 1, &p3_lbl_gforce_long);
+    create_text_display(page_cont[2], "DELTA TIME",     2, 1, &p3_lbl_delta_time);
+    
+    // Set unused arc pointers to NULL for page 3
+    arc_gps_lat = NULL;
+    p3_arc_gps_long = NULL;
+    p3_arc_gps_time = NULL;
+    p3_arc_gforce_lat = NULL;
+    p3_arc_gforce_long = NULL;
+    p3_arc_clt = NULL;
 
-    // Start on page 1
-    switch_to_page(0);
+    // Start on page 2
+    switch_to_page(current_page);
 }
 
 // --- Helper: update a lambda gauge pair ---
@@ -426,11 +615,16 @@ void ui_update() {
     d.fuel_rail_press = wave * 200.0f;
     d.coolant_temp = (int)(40 + (wave * 80));
     d.oil_temp = (int)(70 + (wave * 40));
+    d.oil_pressure = 2.0f + (wave * 6.0f);
     d.speed_obd = (int)(wave * 260);
     d.battery_voltage = 12.0f + wave * 2.5f;
     d.gear = (int)(wave * 6); if(d.gear==0) d.gear=1;
     d.pedal_pos = (int)(wave * 100);
     d.brake_pos = (int)((1.0f-wave) * 100);
+    d.imu_temp = 20.0f + (wave * 40.0f);
+    d.gps_satellites = (int)(wave * 15);
+    // Demo delta time: oscillate between -1.5 and +1.5 seconds
+    d.delta_time = (wave - 0.5f) * 3.0f;
 #else
     if (pthread_mutex_trylock(&data_mutex) == 0) {
         d = v_data; 
@@ -449,12 +643,15 @@ void ui_update() {
     sm.rpm      = smooth_lerp(sm.rpm,      (float)d.rpm,            SMOOTH_ALPHA);
     sm.speed    = smooth_lerp(sm.speed,    (float)d.speed_obd,      SMOOTH_ALPHA);
     sm.oil_temp = smooth_lerp(sm.oil_temp, (float)d.oil_temp,       SMOOTH_ALPHA);
+    sm.oil_pressure = smooth_lerp(sm.oil_pressure, d.oil_pressure,  SMOOTH_ALPHA);
     sm.lambda   = smooth_lerp(sm.lambda,   d.lambda,                SMOOTH_ALPHA);
     sm.boost    = smooth_lerp(sm.boost,    (float)d.boost,          SMOOTH_ALPHA);
     sm.duty     = smooth_lerp(sm.duty,     d.duty_injection,        SMOOTH_ALPHA);
     sm.rail     = smooth_lerp(sm.rail,     d.fuel_rail_press,       SMOOTH_ALPHA);
     sm.coolant  = smooth_lerp(sm.coolant,  (float)d.coolant_temp,   SMOOTH_ALPHA);
     sm.battery_voltage = smooth_lerp(sm.battery_voltage, d.battery_voltage, SMOOTH_ALPHA);
+    sm.imu_temp = smooth_lerp(sm.imu_temp, d.imu_temp,              SMOOTH_ALPHA);
+    sm.gps_satellites = smooth_lerp(sm.gps_satellites, (float)d.gps_satellites, SMOOTH_ALPHA);
 
     int s_rpm     = (int)(sm.rpm + 0.5f);
     int s_speed   = (int)(sm.speed + 0.5f);
@@ -476,27 +673,105 @@ void ui_update() {
     update_int_gauge(p1_arc_rail, p1_lbl_rail, s_rail);
     update_int_gauge(p1_arc_clt, p1_lbl_clt, s_coolant);
 
-    // --- PAGE 2: Speed ---
-    if (arc_speed) lv_arc_set_value(arc_speed, s_speed);
-    if (lbl_speed_val) lv_label_set_text_fmt(lbl_speed_val, "%d", s_speed);
-    update_lambda(p2_arc_lambda, p2_lbl_lambda, sm.lambda);
-    update_boost(p2_arc_map, p2_lbl_map, (int)(sm.boost + 0.5f));
-    update_duty(p2_arc_duty, p2_lbl_duty, sm.duty);
-    update_int_gauge(p2_arc_rail, p2_lbl_rail, s_rail);
-    update_int_gauge(p2_arc_clt, p2_lbl_clt, s_coolant);
-
-    // --- PAGE 3: Oil Temp ---
-    if (arc_oil) lv_arc_set_value(arc_oil, s_oil);
-    if (lbl_oil_val) {
-        lv_label_set_text_fmt(lbl_oil_val, "%d", s_oil);
-        if (s_oil > 120) lv_obj_set_style_text_color(lbl_oil_val, lv_color_hex(0xD32F2F), 0);
-        else lv_obj_set_style_text_color(lbl_oil_val, lv_color_hex(0xFFFFFF), 0);
+    // --- PAGE 2: Coolant, Air Temp, Oil Temp, Rail Pressure, Duty, GPS ---
+    if (arc_coolant_main) lv_arc_set_value(arc_coolant_main, s_coolant);
+    if (lbl_coolant_main) {
+        lv_label_set_text_fmt(lbl_coolant_main, "%d", s_coolant);
+        if (s_coolant > 105) lv_obj_set_style_text_color(lbl_coolant_main, lv_color_hex(0xD32F2F), 0);
+        else lv_obj_set_style_text_color(lbl_coolant_main, lv_color_hex(0xFFFFFF), 0);
     }
-    update_lambda(p3_arc_lambda, p3_lbl_lambda, sm.lambda);
-    update_boost(p3_arc_map, p3_lbl_map, (int)(sm.boost + 0.5f));
-    update_duty(p3_arc_duty, p3_lbl_duty, sm.duty);
-    update_int_gauge(p3_arc_rail, p3_lbl_rail, s_rail);
-    update_int_gauge(p3_arc_clt, p3_lbl_clt, s_coolant);
+    // Air Temperature (Intake)
+    update_int_gauge(p2_arc_air_temp, p2_lbl_air_temp, (int)(d.intake_temp));
+    // Oil Temperature
+    update_int_gauge(p2_arc_oil_temp, p2_lbl_oil_temp, s_oil);
+    // Rail Pressure
+    update_int_gauge(p2_arc_rail, p2_lbl_rail, s_rail);
+    // Duty
+    update_duty(p2_arc_duty, p2_lbl_duty, sm.duty);
+    // GPS Sky Plot
+    update_gps_skyplot(p2_gps_skyplot, &d.gps_data);
+
+    // --- PAGE 3: GPS LAT, GPS LONG, GPS TIME, G-Force LAT, G-Force LONG, Coolant ---
+    // GPS Latitude
+    if (lbl_gps_lat) {
+        if (d.gps_data.fix_valid) {
+            int lat_whole = (int)d.gps_data.latitude;
+            int lat_dec = (int)((d.gps_data.latitude - lat_whole) * 100);
+            if (lat_dec < 0) lat_dec = -lat_dec;
+            lv_label_set_text_fmt(lbl_gps_lat, "%d.%02d", lat_whole, lat_dec);
+        } else {
+            lv_label_set_text(lbl_gps_lat, "--");
+        }
+    }
+    
+    // GPS Longitude
+    if (p3_lbl_gps_long) {
+        if (d.gps_data.fix_valid) {
+            int lon_whole = (int)d.gps_data.longitude;
+            int lon_dec = (int)((d.gps_data.longitude - lon_whole) * 100);
+            if (lon_dec < 0) lon_dec = -lon_dec;
+            lv_label_set_text_fmt(p3_lbl_gps_long, "%d.%02d", lon_whole, lon_dec);
+        } else {
+            lv_label_set_text(p3_lbl_gps_long, "--");
+        }
+    }
+    
+    // GPS Time (UTC+7 for Thailand)
+    if (p3_lbl_gps_time) {
+        if (d.gps_data.time_valid) {
+            int thai_hour = (d.gps_data.utc_hour + 7) % 24;
+            lv_label_set_text_fmt(p3_lbl_gps_time, "%02d:%02d:%02d", thai_hour, d.gps_data.utc_minute, d.gps_data.utc_second);
+        } else {
+            lv_label_set_text(p3_lbl_gps_time, "--:--:--");
+        }
+    }
+    
+    // G-Force Lateral
+    if (p3_lbl_gforce_lat) {
+        int whole = (int)d.g_force_lat;
+        int dec = (int)((d.g_force_lat - whole) * 10);
+        if (dec < 0) dec = -dec;
+        lv_label_set_text_fmt(p3_lbl_gforce_lat, "%d.%d", whole, dec);
+    }
+    
+    // G-Force Longitudinal
+    if (p3_lbl_gforce_long) {
+        int whole = (int)d.g_force_long;
+        int dec = (int)((d.g_force_long - whole) * 10);
+        if (dec < 0) dec = -dec;
+        lv_label_set_text_fmt(p3_lbl_gforce_long, "%d.%d", whole, dec);
+    }
+    
+    // Delta Time (racing telemetry)
+    if (p3_lbl_delta_time) {
+        // Check if we have a valid reference lap time
+        if (d.reference_lap_time > 0.0f) {
+            float delta = d.delta_time;
+            
+            // Format: +X.XX or -X.XX
+            int whole = (int)delta;
+            int dec = (int)((delta - whole) * 100);
+            if (dec < 0) dec = -dec;
+            
+            char sign = (delta >= 0) ? '+' : '-';
+            if (delta < 0) whole = -whole;
+            
+            lv_label_set_text_fmt(p3_lbl_delta_time, "%c%d.%02d", sign, whole, dec);
+            
+            // Color logic for racing: Green=faster (negative), Red=slower (positive), White=neutral
+            if (delta < -0.05f) {
+                lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0x00FF00), 0); // Green (faster)
+            } else if (delta > 0.05f) {
+                lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0xFF0000), 0); // Red (slower)
+            } else {
+                lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0xFFFFFF), 0); // White (neutral)
+            }
+        } else {
+            // No reference lap time - show placeholder
+            lv_label_set_text(p3_lbl_delta_time, "--:--");
+            lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0x888888), 0); // Grey
+        }
+    }
 
     // BATTERY VOLTAGE (LVGL doesn't support %f, use integer math)
     if (lbl_voltage) {

@@ -8,6 +8,8 @@
 #include "signals.h"
 #include "ads1115_pressure.h"
 #include "lambda_i2c.h"
+#include "gps_m9n.h"
+#include "ism330_imu.h"
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
@@ -80,6 +82,93 @@ void *lambda_thread(void *arg) {
     return NULL;
 }
 
+// GPS M9N UART Thread
+void *gps_thread(void *arg) {
+    (void)arg;
+    
+    // Initialize GPS M9N
+    if (!gps_init()) {
+        printf("Failed to initialize GPS M9N, GPS disabled\n");
+        return NULL;
+    }
+    
+    printf("GPS M9N thread started\n");
+    
+    while(1) {
+        // Read GPS data from UART4
+        GPSData temp_gps = {0};  // Initialize to zero
+        gps_update(&temp_gps);
+        
+        // Update global GPS data
+        pthread_mutex_lock(&data_mutex);
+        v_data.gps_data = temp_gps;
+        v_data.gps_satellites = temp_gps.satellites_used;
+        pthread_mutex_unlock(&data_mutex);
+        
+        // Read at 5 Hz (200ms interval)
+        usleep(200000);
+    }
+    
+    gps_close();
+    return NULL;
+}
+
+// ISM330DHCXTR IMU Thread
+void *imu_thread(void *arg) {
+    (void)arg;
+    
+    FILE *log = fopen("/tmp/imu_debug.log", "w");
+    if (log) {
+        fprintf(log, "IMU thread started\n");
+        fflush(log);
+    }
+    
+    // Initialize ISM330DHCXTR
+    if (!imu_init()) {
+        if (log) {
+            fprintf(log, "Failed to initialize ISM330DHCXTR IMU\n");
+            fclose(log);
+        }
+        printf("Failed to initialize ISM330DHCXTR IMU, accelerometer disabled\n");
+        return NULL;
+    }
+    
+    if (log) {
+        fprintf(log, "ISM330DHCXTR IMU initialized successfully\n");
+        fflush(log);
+    }
+    printf("ISM330DHCXTR IMU thread started\n");
+    
+    int sample_count = 0;
+    while(1) {
+        // Read IMU data
+        IMUData temp_imu;
+        imu_update(&temp_imu);
+        
+        // Update global vehicle data
+        pthread_mutex_lock(&data_mutex);
+        v_data.g_force_lat = temp_imu.accel_x;   // Lateral acceleration
+        v_data.g_force_long = temp_imu.accel_y;  // Longitudinal acceleration
+        v_data.imu_temp = temp_imu.temp;         // IMU temperature
+        pthread_mutex_unlock(&data_mutex);
+        
+        // Log first 5 samples for debugging
+        if (log && sample_count < 5) {
+            fprintf(log, "Sample %d: X=%.3f Y=%.3f Z=%.3f T=%.1f\n", 
+                    sample_count, temp_imu.accel_x, temp_imu.accel_y, temp_imu.accel_z, temp_imu.temp);
+            fflush(log);
+            sample_count++;
+        }
+        
+        // Read at 50 Hz (20ms interval)
+        usleep(20000);
+    }
+    
+    if (log) fclose(log);
+    imu_close();
+    return NULL;
+}
+
 int main(void)
 {
     // 1. PIN UI THREAD TO CPU CORE 0
@@ -122,7 +211,7 @@ int main(void)
     ui_init();
 
     // 7. START DATA THREADS
-    pthread_t rx_th, tx_th, ads_th, lambda_th;
+    pthread_t rx_th, tx_th, ads_th, lambda_th, gps_th, imu_th;
     
     // Start ADS1115 Pressure Sensor Thread (always runs)
     pthread_create(&ads_th, NULL, ads1115_thread, NULL);
@@ -133,6 +222,16 @@ int main(void)
     pthread_create(&lambda_th, NULL, lambda_thread, NULL);
     pthread_setname_np(lambda_th, "lambda");
     printf("Lambda sensor thread started\n");
+    
+    // Start GPS M9N Thread (always runs)
+    pthread_create(&gps_th, NULL, gps_thread, NULL);
+    pthread_setname_np(gps_th, "gps_m9n");
+    printf("GPS M9N thread started\n");
+    
+    // Start ISM330DHCXTR IMU Thread (always runs)
+    pthread_create(&imu_th, NULL, imu_thread, NULL);
+    pthread_setname_np(imu_th, "ism330_imu");
+    printf("ISM330DHCXTR IMU thread started\n");
     
     // Check if the CAN interface exists in the system
     if(access("/sys/class/net/can0", F_OK) == 0) {
