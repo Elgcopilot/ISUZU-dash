@@ -289,8 +289,8 @@ void *mqtt_thread(void *arg) {
         local_data = v_data;
         pthread_mutex_unlock(&data_mutex);
         
-        // Publish to MQTT broker
-        if (mqtt_is_connected()) {
+        // Publish to MQTT broker only when engine is running (RPM > 100)
+        if (mqtt_is_connected() && local_data.rpm > 100) {
             if (mqtt_publish_telemetry(&local_data, &config)) {
                 publish_count++;
                 if (log && (publish_count % 100 == 0)) {
@@ -304,7 +304,7 @@ void *mqtt_thread(void *arg) {
                 }
                 printf("MQTT: Failed to publish telemetry\n");
             }
-        } else {
+        } else if (!mqtt_is_connected()) {
             // Try to reconnect
             if (log) {
                 fprintf(log, "MQTT: Reconnecting...\n");
@@ -315,6 +315,7 @@ void *mqtt_thread(void *arg) {
             sleep(5);
             mqtt_init(&config);
         }
+        // else: connected but RPM <= 100, engine off — skip publishing
         
         // Publish at 25 Hz (40ms interval)
         usleep(40000);

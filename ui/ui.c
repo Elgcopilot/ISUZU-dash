@@ -53,7 +53,7 @@ static int blink_counter = 0;  // For blinking animation
 // Page system
 #define NUM_PAGES 3
 #define PAGE_CYCLE_SEC 5
-static int current_page = 1;  // Start on Page 2
+static int current_page = 0;  // Start on Page 1
 static int page_timer = 0;
 static lv_obj_t *page_cont[NUM_PAGES];       // Page containers
 static lv_obj_t *page_dot[NUM_PAGES];         // Page indicator circles
