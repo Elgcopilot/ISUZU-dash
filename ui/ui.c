@@ -53,7 +53,7 @@ static int blink_counter = 0;  // For blinking animation
 // Page system
 #define NUM_PAGES 3
 #define PAGE_CYCLE_SEC 5
-static int current_page = 0;
+static int current_page = 1;  // Start on Page 2
 static int page_timer = 0;
 static lv_obj_t *page_cont[NUM_PAGES];       // Page containers
 static lv_obj_t *page_dot[NUM_PAGES];         // Page indicator circles
@@ -75,6 +75,8 @@ static lv_obj_t *p2_arc_rail, *p2_lbl_rail;
 static lv_obj_t *p2_arc_duty, *p2_lbl_duty;
 static lv_obj_t *p2_gps_skyplot;  // Sky plot canvas
 static lv_obj_t *p2_gps_title;  // GPS title with satellite count
+static lv_obj_t *sat_dots[MAX_SATELLITES];    // Pre-allocated dot pool
+static bool      sat_dots_visible[MAX_SATELLITES]; // fade-in/out state
 
 // Page 3 gauges: GPS LAT, GPS LONG, GPS TIME, G-Force LAT, G-Force LONG, Delta Time
 static lv_obj_t *arc_gps_lat, *lbl_gps_lat;
@@ -367,6 +369,20 @@ static void create_text_display(lv_obj_t *parent, const char *title, int col, in
     *lbl_out = lbl_val;
 }
 
+// Satellite dot opacity animation helpers
+static void sat_opa_cb(void *obj, int32_t val) {
+    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
+}
+static void fade_dot(lv_obj_t *dot, lv_opa_t from, lv_opa_t to, uint32_t dur) {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, dot);
+    lv_anim_set_exec_cb(&a, sat_opa_cb);
+    lv_anim_set_values(&a, (int32_t)from, (int32_t)to);
+    lv_anim_set_time(&a, dur);
+    lv_anim_start(&a);
+}
+
 // --- GPS Sky Plot Functions ---
 // Convert polar coordinates (azimuth, elevation) to Cartesian (x, y)
 static void polar_to_cartesian(int azimuth, int elevation, int center_x, int center_y, int radius, int *x, int *y) {
@@ -436,75 +452,99 @@ static lv_obj_t *create_gps_skyplot(lv_obj_t *parent, int col, int row) {
     lv_obj_set_style_line_width(line_v, 1, 0);
     lv_obj_set_style_line_color(line_v, lv_color_hex(0x444444), 0);
     
-    // Draw N, E, S, W labels
-    const char *directions[] = {"N", "E", "S", "W"};
-    int dir_offsets[][2] = {{0, -radius - 15}, {radius + 10, 0}, {0, radius + 15}, {-radius - 15, 0}};
-    
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *lbl = lv_label_create(cont);
-        lv_label_set_text(lbl, directions[i]);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0x888888), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-        lv_obj_align(lbl, LV_ALIGN_CENTER, dir_offsets[i][0], dir_offsets[i][1] - 5);
+    // Pre-allocate satellite dot pool — hidden initially, updated in-place
+    for (int i = 0; i < MAX_SATELLITES; i++) {
+        sat_dots[i] = lv_obj_create(cont);
+        lv_obj_set_size(sat_dots[i], 8, 8);
+        lv_obj_set_pos(sat_dots[i], cx - 4, cy - 4);
+        lv_obj_set_style_opa(sat_dots[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(sat_dots[i], lv_color_hex(0xFF3300), 0);
+        lv_obj_set_style_bg_opa(sat_dots[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(sat_dots[i], 0, 0);
+        lv_obj_set_style_radius(sat_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_clear_flag(sat_dots[i], LV_OBJ_FLAG_SCROLLABLE);
+        sat_dots_visible[i] = false;
     }
-    
+
     return cont;
 }
 
 // Update GPS Sky Plot with satellite data
 static void update_gps_skyplot(lv_obj_t *skyplot, GPSData *gps_data) {
     if (!skyplot) return;
-    
-    // Update title with satellite count
-    if (p2_gps_title) {
-        char title_text[64];
-        snprintf(title_text, sizeof(title_text), "GPS SATELLITES : %d", gps_data->num_satellites);
-        lv_label_set_text(p2_gps_title, title_text);
-    }
-    
-    // Remove old satellite markers
-    uint32_t child_count = lv_obj_get_child_cnt(skyplot);
-    for (uint32_t i = child_count; i > 7; i--) {  // Keep first 7 children (rings, lines, labels, title)
-        lv_obj_t *child = lv_obj_get_child(skyplot, i - 1);
-        lv_obj_del(child);
-    }
-    
+
     int cx = GAUGE_WIDTH / 2;
     int cy = GAUGE_HEIGHT / 2 - 5;
-    int radius = 85;  // Half of plot_size
-    
-    // Draw satellites
-    for (int i = 0; i < MAX_SATELLITES; i++) {
-        if (gps_data->sats[i].prn == 0) continue;
-        
-        int x, y;
-        polar_to_cartesian(gps_data->sats[i].azimuth, gps_data->sats[i].elevation, cx, cy, radius, &x, &y);
-        
-        // Determine color based on signal strength and usage
-        lv_color_t sat_color;
-        if (!gps_data->sats[i].used) {
-            sat_color = lv_color_hex(0xFF0000);  // Red = not used
-        } else if (gps_data->sats[i].cn0 < 25) {
-            sat_color = lv_color_hex(0xFFFF00);  // Yellow = weak signal
-        } else {
-            sat_color = lv_color_hex(0x00FF00);  // Green = strong signal, used
+    int radius = 85;
+
+    // Title: keep last known count if GPS momentarily reports 0
+    static int last_num_sats = 0;
+    if (gps_data->num_satellites > 0)
+        last_num_sats = gps_data->num_satellites;
+    if (p2_gps_title) {
+        static int displayed_num = -1;
+        if (last_num_sats != displayed_num) {
+            displayed_num = last_num_sats;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "GPS SATELLITES : %d", last_num_sats);
+            lv_label_set_text(p2_gps_title, buf);
         }
-        
-        // Determine size based on signal strength
-        int sat_size = 6 + (gps_data->sats[i].cn0 / 10);
-        if (sat_size < 6) sat_size = 6;
+    }
+
+    // Update each dot in-place — no delete/recreate, smooth fade transitions
+    for (int i = 0; i < MAX_SATELLITES; i++) {
+        if (!sat_dots[i]) continue;
+
+        if (gps_data->sats[i].prn == 0) {
+            // No satellite in this slot — fade out
+            if (sat_dots_visible[i]) {
+                fade_dot(sat_dots[i], LV_OPA_COVER, LV_OPA_TRANSP, 600);
+                sat_dots_visible[i] = false;
+            }
+            continue;
+        }
+
+        // Compute pixel position from polar coords
+        int x, y;
+        polar_to_cartesian(gps_data->sats[i].azimuth, gps_data->sats[i].elevation,
+                           cx, cy, radius, &x, &y);
+
+        // Clip: hide dots that fall outside the circle boundary
+        int dx = x - cx, dy = y - cy;
+        if (dx * dx + dy * dy > radius * radius) {
+            if (sat_dots_visible[i]) {
+                fade_dot(sat_dots[i], LV_OPA_COVER, LV_OPA_TRANSP, 400);
+                sat_dots_visible[i] = false;
+            }
+            continue;
+        }
+
+        // Color: Green = used in fix, Yellow = tracked/medium signal, Red = weak/not used
+        lv_color_t color;
+        int sat_size;
+        if (gps_data->sats[i].used) {
+            color    = lv_color_hex(0x00DD44);  // Green — in position fix
+            sat_size = 8 + (gps_data->sats[i].cn0 / 12);
+        } else if (gps_data->sats[i].cn0 >= 15) {
+            color    = lv_color_hex(0xFFCC00);  // Yellow — tracked, medium signal
+            sat_size = 6 + (gps_data->sats[i].cn0 / 15);
+        } else {
+            color    = lv_color_hex(0xFF3300);  // Red — weak or not used
+            sat_size = 6;
+        }
         if (sat_size > 14) sat_size = 14;
-        
-        // Create satellite marker
-        lv_obj_t *sat = lv_obj_create(skyplot);
-        lv_obj_set_size(sat, sat_size, sat_size);
-        lv_obj_set_pos(sat, x - sat_size/2, y - sat_size/2);
-        lv_obj_set_style_bg_color(sat, sat_color, 0);
-        lv_obj_set_style_bg_opa(sat, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(sat, 1, 0);
-        lv_obj_set_style_border_color(sat, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_radius(sat, LV_RADIUS_CIRCLE, 0);
-        lv_obj_clear_flag(sat, LV_OBJ_FLAG_SCROLLABLE);
+
+        // Update position, size, color in-place
+        lv_obj_set_size(sat_dots[i], sat_size, sat_size);
+        lv_obj_set_pos(sat_dots[i], x - sat_size / 2, y - sat_size / 2);
+        lv_obj_set_style_bg_color(sat_dots[i], color, 0);
+
+        // Fade in if this dot was previously hidden
+        if (!sat_dots_visible[i]) {
+            lv_obj_set_style_opa(sat_dots[i], LV_OPA_TRANSP, 0);
+            fade_dot(sat_dots[i], LV_OPA_TRANSP, LV_OPA_COVER, 400);
+            sat_dots_visible[i] = true;
+        }
     }
 }
 
@@ -651,7 +691,6 @@ void ui_update() {
     sm.coolant  = smooth_lerp(sm.coolant,  (float)d.coolant_temp,   SMOOTH_ALPHA);
     sm.battery_voltage = smooth_lerp(sm.battery_voltage, d.battery_voltage, SMOOTH_ALPHA);
     sm.imu_temp = smooth_lerp(sm.imu_temp, d.imu_temp,              SMOOTH_ALPHA);
-    sm.gps_satellites = smooth_lerp(sm.gps_satellites, (float)d.gps_satellites, SMOOTH_ALPHA);
 
     int s_rpm     = (int)(sm.rpm + 0.5f);
     int s_speed   = (int)(sm.speed + 0.5f);
