@@ -53,7 +53,7 @@ static int blink_counter = 0;  // For blinking animation
 // Page system
 #define NUM_PAGES 3
 #define PAGE_CYCLE_SEC 5
-static int current_page = 0;  // Start on Page 1
+static int current_page = 1;  // Start on Page 1
 static int page_timer = 0;
 static lv_obj_t *page_cont[NUM_PAGES];       // Page containers
 static lv_obj_t *page_dot[NUM_PAGES];         // Page indicator circles
@@ -99,6 +99,22 @@ static int demo_timer = 0;
 #define HEADER_H     50   
 #define ARC_SIZE     200 
 #define Y_OFFSET     25
+
+// Gauge scales validated from real data (min/mid/max labels).
+#define BOOST_MIN_KPA      64
+#define BOOST_MAX_KPA      381
+#define SPEED_MIN_KMH      65
+#define SPEED_MAX_KMH      195
+#define RAIL_MIN_MPA       50
+#define RAIL_MAX_MPA       150
+#define COOLANT_MIN_C      30
+#define COOLANT_MAX_C      90
+#define AIR_TEMP_MIN_C     25
+#define AIR_TEMP_MAX_C     75
+#define OIL_TEMP_MIN_C     38
+#define OIL_TEMP_MAX_C     225
+#define DUTY_MIN_PERCENT   25
+#define DUTY_MAX_PERCENT   75
 
 // --- HELPER: Draw Standardized Cut Lines ---
 static void create_gauge_cuts(lv_obj_t *parent) {
@@ -566,18 +582,18 @@ void ui_init() {
     page_cont[0] = create_page(layout);
     create_bold_gauge(page_cont[0], "ENGINE RPM", 0, 6000, "1500", "3000", "4500", 0, 0, &arc_rpm, &lbl_rpm_val);
     create_bold_gauge(page_cont[0], "LAMBDA",     0, 100,  "",     "1.00", "",     1, 0, &p1_arc_lambda, &p1_lbl_lambda);
-    create_bold_gauge(page_cont[0], "BOOST kPa",  0, 300,  "0",    "150",  "300",  2, 0, &p1_arc_map, &p1_lbl_map);
-    create_bold_gauge(page_cont[0], "SPEED km/h", 0, 260,  "0",    "130",  "260",  0, 1, &p1_arc_duty, &p1_lbl_duty);
-    create_bold_gauge(page_cont[0], "RAIL MPa",   0, 200,  "0",    "100",  "200",  1, 1, &p1_arc_rail, &p1_lbl_rail);
-    create_bold_gauge(page_cont[0], "COOLANT °C", 0, 120,  "0",    "60",   "120",  2, 1, &p1_arc_clt, &p1_lbl_clt);
+    create_bold_gauge(page_cont[0], "BOOST kPa",  BOOST_MIN_KPA, BOOST_MAX_KPA,  "64",  "127",  "381",  2, 0, &p1_arc_map, &p1_lbl_map);
+    create_bold_gauge(page_cont[0], "SPEED km/h", SPEED_MIN_KMH, SPEED_MAX_KMH,  "65",  "130",  "195",  0, 1, &p1_arc_duty, &p1_lbl_duty);
+    create_bold_gauge(page_cont[0], "RAIL MPa",   RAIL_MIN_MPA,  RAIL_MAX_MPA,   "50",  "100",  "150",  1, 1, &p1_arc_rail, &p1_lbl_rail);
+    create_bold_gauge(page_cont[0], "COOLANT °C", COOLANT_MIN_C, COOLANT_MAX_C,  "30",  "60",   "90",   2, 1, &p1_arc_clt, &p1_lbl_clt);
 
     // --- PAGE 2: Coolant, Air Temp, Oil Temp / Rail Pressure, Duty, GPS ---
     page_cont[1] = create_page(layout);
-    create_bold_gauge(page_cont[1], "COOLANT °C", 0, 120,  "0",    "60",   "120",  0, 0, &arc_coolant_main, &lbl_coolant_main);
-    create_bold_gauge(page_cont[1], "AIR TEMP °C",0, 100,  "0",    "50",   "100",  1, 0, &p2_arc_air_temp, &p2_lbl_air_temp);
-    create_bold_gauge(page_cont[1], "OIL TEMP °C",0, 150,  "0",    "75",   "150",  2, 0, &p2_arc_oil_temp, &p2_lbl_oil_temp);
-    create_bold_gauge(page_cont[1], "RAIL MPa",   0, 200,  "0",    "100",  "200",  0, 1, &p2_arc_rail, &p2_lbl_rail);
-    create_bold_gauge(page_cont[1], "DUTY INJ %", 0, 100,  "0",    "50",   "100",  1, 1, &p2_arc_duty, &p2_lbl_duty);
+    create_bold_gauge(page_cont[1], "COOLANT °C", COOLANT_MIN_C, COOLANT_MAX_C,  "30", "60",   "90",   0, 0, &arc_coolant_main, &lbl_coolant_main);
+    create_bold_gauge(page_cont[1], "AIR TEMP °C",AIR_TEMP_MIN_C, AIR_TEMP_MAX_C, "25", "50",   "75",   1, 0, &p2_arc_air_temp, &p2_lbl_air_temp);
+    create_bold_gauge(page_cont[1], "OIL TEMP °C",OIL_TEMP_MIN_C, OIL_TEMP_MAX_C, "38", "75",   "225",  2, 0, &p2_arc_oil_temp, &p2_lbl_oil_temp);
+    create_bold_gauge(page_cont[1], "RAIL MPa",   RAIL_MIN_MPA,  RAIL_MAX_MPA,    "50", "100",  "150",  0, 1, &p2_arc_rail, &p2_lbl_rail);
+    create_bold_gauge(page_cont[1], "DUTY INJ %", DUTY_MIN_PERCENT, DUTY_MAX_PERCENT, "25", "50", "75",  1, 1, &p2_arc_duty, &p2_lbl_duty);
     p2_gps_skyplot = create_gps_skyplot(page_cont[1], 2, 1);  // GPS Sky Plot
 
     // --- PAGE 3: GPS LAT, GPS LONG, GPS TIME / G-Force LAT, G-Force LONG, Delta Time ---
