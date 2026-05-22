@@ -139,9 +139,27 @@ void *can_rx_thread(void *arg) {
 
             if (++sync_counter > 3) {
                 pthread_mutex_lock(&data_mutex);
-                v_data = local_data;
-                v_data.can_connected = true;
-                signals_update_lambda();
+                // Copy only CAN-derived fields — do NOT overwrite sensor/GPS fields
+                v_data.rpm               = local_data.rpm;
+                v_data.duty_injection    = local_data.duty_injection;
+                v_data.speed_fl          = local_data.speed_fl;
+                v_data.speed_fr          = local_data.speed_fr;
+                v_data.speed_rl          = local_data.speed_rl;
+                v_data.speed_rr          = local_data.speed_rr;
+                v_data.speed_avg         = local_data.speed_avg;
+                v_data.pedal_pos         = local_data.pedal_pos;
+                v_data.brake_pos         = local_data.brake_pos;
+                v_data.coolant_temp      = local_data.coolant_temp;
+                v_data.oil_temp          = local_data.oil_temp;
+                // boost is written by ADS1115 thread (AIN1 physical sensor)
+                v_data.speed_obd         = local_data.speed_obd;
+                v_data.fuel_rail_press   = local_data.fuel_rail_press;
+                v_data.maf               = local_data.maf;
+                v_data.fuel_rate         = local_data.fuel_rate;
+                v_data.intake_temp       = local_data.intake_temp;
+                v_data.battery_voltage   = local_data.battery_voltage;
+                v_data.can_connected     = true;
+                // lambda is written by lambda_thread (I2C 0x33) — do not recalculate here
                 signals_calculate_gear();
                 pthread_mutex_unlock(&data_mutex);
                 sync_counter = 0;

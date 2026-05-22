@@ -61,6 +61,7 @@ typedef struct {
 
 extern VehicleData v_data;
 extern pthread_mutex_t data_mutex;
+extern pthread_mutex_t i2c8_mutex;
 
 void signals_init();
 void signals_update_lambda();

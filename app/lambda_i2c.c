@@ -4,6 +4,7 @@
  */
 
 #include "lambda_i2c.h"
+#include "../decode/signals.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -49,11 +50,13 @@ float lambda_read() {
     // First 4 bytes: float value (little-endian IEEE 754)
     // Last 2 bytes: unused
     uint8_t buffer[6];
-    
+
+    pthread_mutex_lock(&i2c8_mutex);
     if (read(i2c_fd, buffer, 6) != 6) {
-        // Read error - return error value
+        pthread_mutex_unlock(&i2c8_mutex);
         return -1.0f;
     }
+    pthread_mutex_unlock(&i2c8_mutex);
 
     // Extract float from first 4 bytes (little-endian)
     union {

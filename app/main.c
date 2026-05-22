@@ -145,7 +145,7 @@ void *imu_thread(void *arg) {
     int sample_count = 0;
     while(1) {
         // Read IMU data
-        IMUData temp_imu;
+        IMUData temp_imu = {0};
         imu_update(&temp_imu);
         
         // Update global vehicle data
@@ -158,8 +158,8 @@ void *imu_thread(void *arg) {
         v_data.imu_temp = temp_imu.temp;         // IMU temperature
         pthread_mutex_unlock(&data_mutex);
         
-        // Log first 5 samples for debugging
-        if (log && sample_count < 5) {
+        // Log first 50 samples for debugging
+        if (log && sample_count < 50) {
             fprintf(log, "Sample %d: X=%.3f Y=%.3f Z=%.3f T=%.1f\n", 
                     sample_count, temp_imu.accel_x, temp_imu.accel_y, temp_imu.accel_z, temp_imu.temp);
             fflush(log);
@@ -207,8 +207,8 @@ void *mag_thread(void *arg) {
         v_data.mag_z = temp_mag.mag_z;
         pthread_mutex_unlock(&data_mutex);
         
-        // Log first 5 samples for debugging
-        if (log && sample_count < 5) {
+        // Log first 50 samples for debugging
+        if (log && sample_count < 50) {
             fprintf(log, "Sample %d: X=%.3f Y=%.3f Z=%.3f Gauss\n", 
                     sample_count, temp_mag.mag_x, temp_mag.mag_y, temp_mag.mag_z);
             fflush(log);
@@ -265,13 +265,14 @@ void *mqtt_thread(void *arg) {
         fflush(log);
     }
     
-    if (!mqtt_init(&config)) {
+    while (!mqtt_init(&config)) {
         if (log) {
-            fprintf(log, "Failed to initialize MQTT, telemetry disabled\n");
-            fclose(log);
+            fprintf(log, "MQTT: Initial connect failed, retrying in 5 seconds...\n");
+            fflush(log);
         }
-        printf("Failed to initialize MQTT, telemetry disabled\n");
-        return NULL;
+        printf("MQTT: Initial connect failed, retrying in 5 seconds...\n");
+        mqtt_cleanup();
+        sleep(5);
     }
     
     if (log) {
@@ -289,8 +290,8 @@ void *mqtt_thread(void *arg) {
         local_data = v_data;
         pthread_mutex_unlock(&data_mutex);
         
-        // Publish to MQTT broker only when engine is running (RPM > 100)
-        if (mqtt_is_connected() && local_data.rpm > 100) {
+        // Publish to MQTT broker whenever connected (debug mode)
+        if (mqtt_is_connected()) {
             if (mqtt_publish_telemetry(&local_data, &config)) {
                 publish_count++;
                 if (log && (publish_count % 100 == 0)) {
@@ -315,8 +316,6 @@ void *mqtt_thread(void *arg) {
             sleep(5);
             mqtt_init(&config);
         }
-        // else: connected but RPM <= 100, engine off — skip publishing
-        
         // Publish at 25 Hz (40ms interval)
         usleep(40000);
     }
@@ -422,7 +421,26 @@ int main(void)
 
     printf("UI Loop Started on Core 0.\n");
 
-    // 8. ENGINE-OFF SHUTDOWN DETECTION (commented out)
+    // 8. CAMERA SERVICE STATE (gst-stream@carN from config)
+    // Read device number from config to build service name
+    char cam_service[64] = "gst-stream@car0.service";
+    {
+        Config main_cfg;
+        if (!config_load("/mnt/candata/config.txt", &main_cfg)) {
+            main_cfg.device = 0;  // fallback: unknown
+        }
+        snprintf(cam_service, sizeof(cam_service),
+                 "gst-stream@car%d.service", main_cfg.device);
+    }
+    printf("Camera service: %s\n", cam_service);
+    // Stop at startup for clean state; loop will restart when engine on
+    { char cmd[128]; snprintf(cmd, sizeof(cmd), "systemctl stop --no-block %s 2>/dev/null", cam_service); int _r = system(cmd); (void)_r; }
+    bool camera_running = false;
+    int cam_engine_off_ticks = 0;
+    // 5 seconds of RPM==0 before stopping camera (312 ticks @ 16ms)
+    const int CAM_STOP_TICKS = (5 * 1000000) / 16000;
+
+    // 9. ENGINE-OFF SHUTDOWN DETECTION (commented out)
     // int engine_off_ticks = 0;
     // const int shutdown_ticks = (SHUTDOWN_DELAY_SEC * 1000000) / 16000;
     // bool shutdown_triggered = false;
@@ -453,6 +471,30 @@ int main(void)
         //         engine_off_ticks = 0;
         //     }
         // }
+
+        // Camera service: start on engine on, stop after 5s engine off
+        {
+            pthread_mutex_lock(&data_mutex);
+            int cur_rpm = v_data.rpm;
+            bool connected = v_data.can_connected;
+            pthread_mutex_unlock(&data_mutex);
+
+            if (connected && cur_rpm > 0) {
+                cam_engine_off_ticks = 0;
+                if (!camera_running) {
+                    { char cmd[128]; snprintf(cmd, sizeof(cmd), "systemctl start --no-block %s", cam_service); int _r = system(cmd); (void)_r; }
+                    camera_running = true;
+                    printf("Engine ON — camera stream started\n");
+                }
+            } else {
+                if (camera_running && ++cam_engine_off_ticks >= CAM_STOP_TICKS) {
+                    { char cmd[128]; snprintf(cmd, sizeof(cmd), "systemctl stop --no-block %s", cam_service); int _r = system(cmd); (void)_r; }
+                    camera_running = false;
+                    cam_engine_off_ticks = 0;
+                    printf("Engine OFF 5s — camera stream stopped\n");
+                }
+            }
+        }
 
         // Advance LVGL internal time by 16ms
         lv_tick_inc(16);

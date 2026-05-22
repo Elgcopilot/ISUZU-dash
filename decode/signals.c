@@ -4,9 +4,11 @@
 
 VehicleData v_data;
 pthread_mutex_t data_mutex;
+pthread_mutex_t i2c8_mutex;
 
 void signals_init() {
     pthread_mutex_init(&data_mutex, NULL);
+    pthread_mutex_init(&i2c8_mutex, NULL);
     memset(&v_data, 0, sizeof(VehicleData));
     
     // Initialize Lambda to 0.0 so the gauge starts empty

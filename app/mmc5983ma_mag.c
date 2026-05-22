@@ -3,6 +3,7 @@
  */
 
 #include "mmc5983ma_mag.h"
+#include "../decode/signals.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,32 +47,26 @@ static int mag_fd = -1;
 // Write to register
 static bool write_register(uint8_t reg, uint8_t value) {
     uint8_t buf[2] = {reg, value};
-    if (write(mag_fd, buf, 2) != 2) {
-        return false;
-    }
-    return true;
+    pthread_mutex_lock(&i2c8_mutex);
+    bool ok = (write(mag_fd, buf, 2) == 2);
+    pthread_mutex_unlock(&i2c8_mutex);
+    return ok;
 }
 
 // Read from register
 static bool read_register(uint8_t reg, uint8_t *value) {
-    if (write(mag_fd, &reg, 1) != 1) {
-        return false;
-    }
-    if (read(mag_fd, value, 1) != 1) {
-        return false;
-    }
-    return true;
+    pthread_mutex_lock(&i2c8_mutex);
+    bool ok = (write(mag_fd, &reg, 1) == 1) && (read(mag_fd, value, 1) == 1);
+    pthread_mutex_unlock(&i2c8_mutex);
+    return ok;
 }
 
 // Read multiple registers
 static bool read_registers(uint8_t reg, uint8_t *buffer, uint8_t len) {
-    if (write(mag_fd, &reg, 1) != 1) {
-        return false;
-    }
-    if (read(mag_fd, buffer, len) != len) {
-        return false;
-    }
-    return true;
+    pthread_mutex_lock(&i2c8_mutex);
+    bool ok = (write(mag_fd, &reg, 1) == 1) && (read(mag_fd, buffer, len) == len);
+    pthread_mutex_unlock(&i2c8_mutex);
+    return ok;
 }
 
 bool mag_init(void) {
@@ -177,9 +172,14 @@ void mag_update(MagData *mag_data) {
     // Trigger single measurement (TM_M = 0x01, matching Python code)
     write_register(MMC5983MA_CTRL0, 0x01);
     
-    // Wait for measurement to complete (~10ms)
-    usleep(10000);
-    
+    // Wait for MEAS_M_DONE (bit 0 of STATUS register), timeout ~20ms
+    uint8_t status = 0;
+    int retries = 20;
+    while (retries-- > 0) {
+        if (read_register(MMC5983MA_STATUS, &status) && (status & MMC5983MA_STATUS_MEAS_M_DONE)) break;
+        usleep(1000);
+    }
+
     uint8_t data[6];
 
     // Read 6 bytes of magnetometer data (matching Python code)

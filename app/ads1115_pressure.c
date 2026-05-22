@@ -4,6 +4,7 @@
  */
 
 #include "ads1115_pressure.h"
+#include "../decode/signals.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -23,8 +24,9 @@
 
 // Config register bits for AIN1, ±6.144V, single-shot, 128 SPS
 // OS[15]=1 (start), MUX[14:12]=101 (AIN1), PGA[11:9]=000 (±6.144V)
-// MODE[8]=1 (single), DR[7:5]=100 (128SPS), COMP[4:0]=11 (disable)
-#define CONFIG_AIN1        0xD103
+// MODE[8]=1 (single), DR[7:5]=100 (128SPS), COMP[1:0]=11 (disable)
+// High byte: 0xD1 = 1101 0001  Low byte: 0x83 = 1000 0011
+#define CONFIG_AIN1        0xD183
 
 // Sensor calibration
 #define PMAX_PSI           100.0f         // Maximum pressure rating
@@ -62,34 +64,40 @@ static int16_t ads1115_read_adc() {
         return -32768; // Error value
     }
 
-    // Write config to start conversion
+    // Write config to start conversion (lock only for the write)
     uint8_t config_data[3] = {
         REG_CONFIG,
         (CONFIG_AIN1 >> 8) & 0xFF,  // High byte
         CONFIG_AIN1 & 0xFF          // Low byte
     };
 
+    pthread_mutex_lock(&i2c8_mutex);
     if (write(i2c_fd, config_data, 3) != 3) {
         perror("Failed to write config");
+        pthread_mutex_unlock(&i2c8_mutex);
         return -32768;
     }
+    pthread_mutex_unlock(&i2c8_mutex);
 
-    // Wait for conversion (10ms for 128 SPS)
+    // Wait for conversion OUTSIDE mutex (128 SPS → ~7.8ms, 10ms is safe)
     usleep(10000);
 
-    // Set pointer to conversion register
+    // Read conversion result (lock only for pointer-write + read)
     uint8_t reg = REG_CONVERSION;
+    uint8_t data[2];
+
+    pthread_mutex_lock(&i2c8_mutex);
     if (write(i2c_fd, &reg, 1) != 1) {
         perror("Failed to set pointer");
+        pthread_mutex_unlock(&i2c8_mutex);
         return -32768;
     }
-
-    // Read conversion result (2 bytes)
-    uint8_t data[2];
     if (read(i2c_fd, data, 2) != 2) {
         perror("Failed to read conversion");
+        pthread_mutex_unlock(&i2c8_mutex);
         return -32768;
     }
+    pthread_mutex_unlock(&i2c8_mutex);
 
     // Combine to signed 16-bit value
     int16_t raw = (data[0] << 8) | data[1];
@@ -109,9 +117,9 @@ float ads1115_read_boost_kpa() {
     // Prevent negative voltage
     if (voltage < 0.0f) voltage = 0.0f;
     
-    // Calculate boost pressure in PSI using formula
-    // boostPSI = (voltage - 0.5) * (PMAX_PSI / 4.0)
-    // where PMAX_PSI = 100
+    // Datasheet transfer function (sealed gage, V_supply=5V):
+    //   Output(V) = (0.8*Vs/(Pmax-Pmin)) * (P - Pmin) + 0.10*Vs
+    // Inverted: P_PSI = (V - 0.5) * Pmax / 4.0
     float boostPSI = (voltage - 0.5f) * (PMAX_PSI / 4.0f);
     
     // Prevent negative readings from noise

@@ -1,4 +1,5 @@
 #include "ism330_imu.h"
+#include "../decode/signals.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,7 @@
 #define CTRL2_G         0x11  // Gyroscope control
 #define OUT_TEMP_L      0x20  // Temperature output low
 #define OUT_TEMP_H      0x21  // Temperature output high
+#define STATUS_REG      0x1E  // Data ready status
 #define OUTX_L_G        0x22  // Gyroscope X-axis low
 #define OUTX_H_G        0x23  // Gyroscope X-axis high
 #define OUTY_L_G        0x24  // Gyroscope Y-axis low
@@ -35,32 +37,26 @@ static int imu_fd = -1;
 // Write to register
 static bool write_register(uint8_t reg, uint8_t value) {
     uint8_t buf[2] = {reg, value};
-    if (write(imu_fd, buf, 2) != 2) {
-        return false;
-    }
-    return true;
+    pthread_mutex_lock(&i2c8_mutex);
+    bool ok = (write(imu_fd, buf, 2) == 2);
+    pthread_mutex_unlock(&i2c8_mutex);
+    return ok;
 }
 
 // Read from register
 static bool read_register(uint8_t reg, uint8_t *value) {
-    if (write(imu_fd, &reg, 1) != 1) {
-        return false;
-    }
-    if (read(imu_fd, value, 1) != 1) {
-        return false;
-    }
-    return true;
+    pthread_mutex_lock(&i2c8_mutex);
+    bool ok = (write(imu_fd, &reg, 1) == 1) && (read(imu_fd, value, 1) == 1);
+    pthread_mutex_unlock(&i2c8_mutex);
+    return ok;
 }
 
 // Read multiple registers
 static bool read_registers(uint8_t reg, uint8_t *buffer, uint8_t len) {
-    if (write(imu_fd, &reg, 1) != 1) {
-        return false;
-    }
-    if (read(imu_fd, buffer, len) != len) {
-        return false;
-    }
-    return true;
+    pthread_mutex_lock(&i2c8_mutex);
+    bool ok = (write(imu_fd, &reg, 1) == 1) && (read(imu_fd, buffer, len) == len);
+    pthread_mutex_unlock(&i2c8_mutex);
+    return ok;
 }
 
 bool imu_init(void) {
@@ -132,6 +128,15 @@ void imu_update(IMUData *imu_data) {
     uint8_t accel_data[6];
     uint8_t gyro_data[6];
     uint8_t temp_data[2];
+    uint8_t status = 0;
+
+    // Wait for data ready (XLDA bit1=accel, GDA bit0=gyro)
+    int retries = 5;
+    while (retries-- > 0) {
+        if (!read_register(STATUS_REG, &status)) break;
+        if ((status & 0x03) == 0x03) break;  // both accel+gyro ready
+        usleep(500);
+    }
 
     // Read accelerometer data (6 bytes: X, Y, Z)
     if (read_registers(OUTX_L_A, accel_data, 6)) {

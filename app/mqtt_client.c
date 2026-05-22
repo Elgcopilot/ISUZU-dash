@@ -173,7 +173,7 @@ bool mqtt_publish_telemetry(const VehicleData *data, const Config *config) {
         (double)data->gyro_x,
         (double)data->gyro_y,
         (double)data->gyro_z,
-        (double)data->boost / 100.0,  // Convert kPa to bar-ish scale
+        (double)data->boost,  // kPa from ADS1115 AIN1
         (double)data->lambda,
         (double)data->duty_injection,
         (double)data->coolant_temp,
