@@ -144,6 +144,8 @@ bool mqtt_publish_telemetry(const VehicleData *data, const Config *config) {
         "\"class\":\"isuzu-omr\","
         "\"hr\":null,"
         "\"duty_injection\":%.2f,"
+        "\"battery_voltage\":%.2f,"
+        "\"throttle\":%d,"
         "\"coolant_temp\":%.1f,"
         "\"fuel_flow_rate\":%.2f,"
         "\"fuel_rail_pressure\":%.2f,"
@@ -176,6 +178,8 @@ bool mqtt_publish_telemetry(const VehicleData *data, const Config *config) {
         (double)data->boost,  // kPa from ADS1115 AIN1
         (double)data->lambda,
         (double)data->duty_injection,
+        (double)data->battery_voltage,
+        data->pedal_pos,
         (double)data->coolant_temp,
         (double)data->fuel_rate,
         (double)data->fuel_rail_press,

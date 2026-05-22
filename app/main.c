@@ -290,8 +290,8 @@ void *mqtt_thread(void *arg) {
         local_data = v_data;
         pthread_mutex_unlock(&data_mutex);
         
-        // Publish to MQTT broker whenever connected (debug mode)
-        if (mqtt_is_connected()) {
+        // Publish to MQTT broker only when engine is running (RPM > 0)
+        if (mqtt_is_connected() && local_data.rpm > 0) {
             if (mqtt_publish_telemetry(&local_data, &config)) {
                 publish_count++;
                 if (log && (publish_count % 100 == 0)) {
