@@ -96,10 +96,10 @@ void *gps_thread(void *arg) {
     }
     
     printf("GPS M9N thread started\n");
+    GPSData temp_gps = {0};
     
     while(1) {
         // Read GPS data from UART4
-        GPSData temp_gps = {0};  // Initialize to zero
         gps_update(&temp_gps);
         
         // Update global GPS data

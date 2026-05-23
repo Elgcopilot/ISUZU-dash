@@ -103,11 +103,11 @@ bool mqtt_publish_telemetry(const VehicleData *data, const Config *config) {
         return false;
     }
     
-    // Build datetime string from GPS time (DD/MM/YY HH:MM:SS)
+    // Build datetime string from GPS time (UTC) when available.
     char datetime[32];
     if (data->gps_data.time_valid) {
         time_t now = time(NULL);
-        struct tm *tm_info = localtime(&now);
+        struct tm *tm_info = gmtime(&now);
         snprintf(datetime, sizeof(datetime), "%02d/%02d/%02d %02d:%02d:%02d",
                  tm_info->tm_mday, tm_info->tm_mon + 1, tm_info->tm_year % 100,
                  data->gps_data.utc_hour, data->gps_data.utc_minute, data->gps_data.utc_second);
