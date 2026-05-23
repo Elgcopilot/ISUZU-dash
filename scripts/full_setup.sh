@@ -6,7 +6,7 @@
 #   sudo bash full_setup.sh
 #
 # This script does everything:
-#   Phase 1 (before reboot): Device tree patch for eMMC + MCP2515 CAN
+#   Phase 1 (before reboot): Device tree patch for eMMC + dual MCP2515 CAN overlay
 #   Phase 2 (after reboot):  eMMC setup, build, deploy, CI/CD runner
 #
 # The script auto-detects which phase to run.
@@ -45,7 +45,7 @@ phase1() {
     # ----------------------------------------------------------
     # 1.1: Install basic tools
     # ----------------------------------------------------------
-    echo "[1/4] Installing tools..."
+    echo "[1/5] Installing tools..."
     apt-get update -qq
     apt-get install -y -qq device-tree-compiler python3
 
@@ -56,7 +56,7 @@ phase1() {
     #          default DTB. HS400-ES causes timeout errors.
     # Fix:    Enable controller, add power supplies, use HS200.
     # ----------------------------------------------------------
-    echo "[2/4] Patching device tree for eMMC..."
+    echo "[2/5] Patching device tree for eMMC..."
 
     if [ ! -f "$DTB_PATH" ]; then
         echo "ERROR: DTB not found at $DTB_PATH"
@@ -110,27 +110,6 @@ if old_node:
     print("  eMMC node patched: status=okay, HS200, power supplies added")
 else:
     print("  WARNING: mmc@2a330000 node not found — may already be patched")
-
-# Update CAN oscillator frequency: 8MHz -> 16MHz
-# MCP2515 crystal changed from 8MHz (0x7a1200) to 16MHz (0xF42400)
-old_freq = re.search(r'(can_osc \{[^}]*clock-frequency = <)(0x[0-9a-fA-F]+)(>;[^}]*\})', content, re.DOTALL)
-if old_freq:
-    current_freq = old_freq.group(2)
-    if current_freq == "0x7a1200":
-        content = content.replace("clock-frequency = <0x7a1200>;", "clock-frequency = <0xf42400>;")
-        print("  CAN oscillator: updated from 8MHz to 16MHz")
-    elif current_freq == "0xf42400":
-        print("  CAN oscillator: already 16MHz")
-    else:
-        print(f"  WARNING: CAN oscillator has unexpected frequency {current_freq}")
-else:
-    print("  WARNING: can_osc node not found in DTB")
-
-# Verify MCP2515 CAN nodes exist (spi@2ad00000)
-if "mcp2515@0" in content:
-    print("  MCP2515 CAN nodes: already present in DTB (dual channel)")
-else:
-    print("  WARNING: MCP2515 not found in DTB — CAN may not work")
 
 # ----------------------------------------------------------
 # Enable I2C8 and add sensors: MMC5983MA, ISM330DHCXTR, ADS1115
@@ -188,7 +167,7 @@ PYEOF
     # Use non-SPI DTB (SPI variant has pin conflicts with eMMC)
     # Safe console settings that keep framebuffer working
     # ----------------------------------------------------------
-    echo "[3/4] Setting boot config..."
+    echo "[3/5] Setting boot config..."
 
     # Get current root UUID
     ROOT_UUID=$(findmnt -n -o UUID /)
@@ -211,9 +190,19 @@ BOOTEOF
     echo "    rootdev  = UUID=${ROOT_UUID}"
 
     # ----------------------------------------------------------
-    # 1.4: Mark phase 1 complete
+    # 1.4: Install dual MCP2515 CAN overlay + rename service
     # ----------------------------------------------------------
-    echo "[4/4] Phase 1 complete"
+    echo "[4/5] Installing dual CAN setup..."
+    if [ -f /home/elg/SPIsetup.sh ]; then
+        bash /home/elg/SPIsetup.sh --install-only
+    else
+        echo "WARNING: /home/elg/SPIsetup.sh not found — dual CAN overlay was not installed"
+    fi
+
+    # ----------------------------------------------------------
+    # 1.5: Mark phase 1 complete
+    # ----------------------------------------------------------
+    echo "[5/5] Phase 1 complete"
     touch "$MARKER_FILE"
 
     echo ""
@@ -288,17 +277,42 @@ phase2() {
     echo "  eMMC ready: $(df -h "$EMMC_MOUNT" | tail -1 | awk '{print $2}') total, $(df -h "$EMMC_MOUNT" | tail -1 | awk '{print $4}') free"
 
     # ----------------------------------------------------------
-    # 2.3: Verify CAN bus (MCP2515)
+    # 2.3: Configure dual CAN bus (MCP2515 on SPI1 M1)
     # ----------------------------------------------------------
-    echo "[3/8] Checking CAN bus..."
-    if dmesg | grep -q "MCP2515 successfully initialized"; then
-        echo "  MCP2515 CAN: OK (8MHz oscillator, SPI1)"
-        ip link set can0 down 2>/dev/null || true
-        ip link set can0 up type can bitrate 500000 restart-ms 100
-        echo "  can0: UP at 500kbit/s"
+    echo "[3/8] Configuring CAN bus..."
+
+    cat > /etc/modules-load.d/mcp251x.conf << 'MODEOF'
+mcp251x
+can_dev
+MODEOF
+
+    if [ -f /home/elg/SPIsetup.sh ]; then
+        bash /home/elg/SPIsetup.sh --install-only
     else
-        echo "  WARNING: MCP2515 not detected in dmesg"
-        echo "  CAN may not work — check wiring and SPI connection"
+        echo "WARNING: /home/elg/SPIsetup.sh not found — CAN rename service was not refreshed"
+    fi
+
+    systemctl daemon-reload
+    systemctl enable can-rename.service 2>/dev/null || true
+    systemctl start can-rename.service 2>/dev/null || true
+
+    if ip link show can0 &>/dev/null; then
+        ip link set can0 down 2>/dev/null || true
+        ip link set can0 type can bitrate 500000 restart-ms 100
+        ip link set can0 up
+        echo "  can0: UP at 500kbit/s"
+        ip -details link show can0 | grep 'parentdev\|can state' || true
+    else
+        echo "  Dual MCP2515 overlay installed — interfaces not visible yet"
+        echo "  Verify after reboot with: cat /proc/interrupts | grep spi1"
+    fi
+
+    if ip link show can1 &>/dev/null; then
+        ip link set can1 down 2>/dev/null || true
+        ip link set can1 type can bitrate 500000 restart-ms 100
+        ip link set can1 up
+        echo "  can1: UP at 500kbit/s"
+        ip -details link show can1 | grep 'parentdev\|can state' || true
     fi
 
     # ----------------------------------------------------------
@@ -444,13 +458,14 @@ EOF
     echo "========================================================"
     echo ""
     echo "  Dashboard:  sudo systemctl status isuzu_mfd.service"
-    echo "  CAN bus:    can0 @ 500kbit/s (MCP2515, SPI1)"
+    echo "  CAN bus:    can0/can1 @ 500kbit/s (dual MCP2515, SPI1 M1)"
     echo "  Binary:     $EMMC_MOUNT/app/isuzu_mfd (eMMC)"
     echo "  CI/CD:      Push to '$BRANCH' → auto build & deploy"
     echo ""
     echo "  Verify:"
-    echo "    candump can0          # Watch CAN traffic"
-    echo "    cansend can0 123#DEAD # Send test frame"
+    echo "    cat /proc/interrupts | grep spi1"
+    echo "    ip -details link show can0 | grep 'parentdev\|can state'"
+    echo "    timeout 5 candump can0 | head -10"
     echo ""
 }
 

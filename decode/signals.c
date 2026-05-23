@@ -40,13 +40,13 @@ void signals_update_lambda() {
 
 void signals_calculate_gear() {
     // Prevent division by zero or noise at standstill
-    if (v_data.speed_avg < 2.0f || v_data.rpm < 500) {
+    if (v_data.speed_obd < 2 || v_data.rpm < 500) {
         v_data.gear = 0; // Neutral
         return;
     }
 
     // Ratio = RPM / Speed (km/h)
-    float ratio = (float)v_data.rpm / v_data.speed_avg;
+    float ratio = (float)v_data.rpm / (float)v_data.speed_obd;
 
     // Thresholds based on your Isuzu D-Max data
     if (ratio > 130.0f) v_data.gear = 1;
