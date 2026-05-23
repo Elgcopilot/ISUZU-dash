@@ -8,9 +8,6 @@ LINK_FILE="/etc/systemd/network/10-quectel-cellular.link"
 ROUTE_METRIC="10"
 MODEM_IFACE=""
 APPLY_CHANGES=0
-MODEM_SERIAL_PORT="/dev/ttyUSB2"
-MODEM_SERIAL_BAUD="115200"
-MODEM_DHCP_IFACE="usb0"
 
 usage() {
   cat <<'EOF'
@@ -26,8 +23,6 @@ Options:
   -h, --help             Show this help
 
 This script:
-  0. Installs modem bootstrap tools, opens minicom for the Quectel AT commands,
-     refreshes DHCP on usb0, then continues with the persistent uplink setup.
   1. Creates a systemd .link file that renames the USB modem NIC to a stable name.
   2. Updates netplan so the current modem interface is preferred immediately.
   3. Keeps the future stable modem name configured for the next replug or reboot.
@@ -45,40 +40,6 @@ log() {
 fail() {
   echo "ERROR: $*" >&2
   exit 1
-}
-
-prepare_modem() {
-  log "Installing modem bootstrap packages"
-  apt-get update
-  apt-get install -y minicom isc-dhcp-client udhcpc
-
-  command -v minicom >/dev/null 2>&1 || fail "minicom install failed"
-  command -v dhclient >/dev/null 2>&1 || fail "isc-dhcp-client install failed"
-  command -v udhcpc >/dev/null 2>&1 || fail "udhcpc install failed"
-
-  [[ -e "$MODEM_SERIAL_PORT" ]] || fail "Serial port $MODEM_SERIAL_PORT not found"
-
-  cat <<EOF
-
-[cellular-setup] Minicom will open on $MODEM_SERIAL_PORT at $MODEM_SERIAL_BAUD baud.
-[cellular-setup] Run these commands inside minicom, then exit minicom to continue:
-AT+QCFG="usbnet",1
-AT+CGDCONT=1,"IPV4V6","internet"
-AT+CFUN=1,1
-
-EOF
-
-  minicom -D "$MODEM_SERIAL_PORT" -b "$MODEM_SERIAL_BAUD"
-
-  log "Refreshing package lists after modem reboot"
-  apt update
-
-  if [[ ! -d "/sys/class/net/$MODEM_DHCP_IFACE" ]]; then
-    fail "Expected modem network interface $MODEM_DHCP_IFACE after minicom step"
-  fi
-
-  log "Requesting DHCP lease on $MODEM_DHCP_IFACE"
-  dhclient -v "$MODEM_DHCP_IFACE"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -120,8 +81,6 @@ done
 if [[ $(id -u) -ne 0 ]]; then
   fail "Run this script with sudo or as root"
 fi
-
-prepare_modem
 
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 command -v netplan >/dev/null 2>&1 || fail "netplan is required"
