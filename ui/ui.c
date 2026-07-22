@@ -59,6 +59,12 @@ static lv_obj_t *page_cont[NUM_PAGES];       // Page containers
 static lv_obj_t *page_dot[NUM_PAGES];         // Page indicator circles
 static lv_obj_t *page_dot_lbl[NUM_PAGES];     // Labels inside circles
 
+#define UI_NAV_QUEUE_SIZE 16
+static UiNavigationCommand navigation_queue[UI_NAV_QUEUE_SIZE];
+static unsigned int navigation_head = 0;
+static unsigned int navigation_tail = 0;
+static pthread_mutex_t navigation_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // Page 1 gauges: RPM, Lambda, MAP, Duty, Rail, Coolant
 static lv_obj_t *arc_rpm, *lbl_rpm_val;
 static lv_obj_t *p1_arc_lambda, *p1_lbl_lambda;
@@ -351,6 +357,48 @@ static void switch_to_page(int pg) {
             lv_obj_set_style_text_color(page_dot_lbl[i], lv_color_hex(0x999999), 0);
         }
     }
+}
+
+void ui_request_navigation(UiNavigationCommand command) {
+    pthread_mutex_lock(&navigation_mutex);
+
+    unsigned int next_head = (navigation_head + 1) % UI_NAV_QUEUE_SIZE;
+    if (next_head != navigation_tail) {
+        navigation_queue[navigation_head] = command;
+        navigation_head = next_head;
+    }
+
+    pthread_mutex_unlock(&navigation_mutex);
+}
+
+static void process_navigation_requests(void) {
+    UiNavigationCommand command;
+    bool has_command;
+
+    do {
+        pthread_mutex_lock(&navigation_mutex);
+        has_command = navigation_tail != navigation_head;
+        if (has_command) {
+            command = navigation_queue[navigation_tail];
+            navigation_tail = (navigation_tail + 1) % UI_NAV_QUEUE_SIZE;
+        }
+        pthread_mutex_unlock(&navigation_mutex);
+
+        if (!has_command) break;
+
+        switch (command) {
+            case UI_NAV_LEFT:
+            case UI_NAV_UP:
+                switch_to_page((current_page + NUM_PAGES - 1) % NUM_PAGES);
+                break;
+
+            case UI_NAV_RIGHT:
+            case UI_NAV_DOWN:
+            case UI_NAV_ENTER:
+                switch_to_page((current_page + 1) % NUM_PAGES);
+                break;
+        }
+    } while (has_command);
 }
 
 // --- Helper: create simple text display (no gauge) ---
@@ -661,6 +709,9 @@ static void update_int_gauge(lv_obj_t *arc, lv_obj_t *lbl, int val) {
 
 void ui_update() {
     VehicleData d;
+
+    // Apply CAN navigation requests on the LVGL/UI thread only.
+    process_navigation_requests();
 
 #ifdef DEMO_MODE
     static int demo_timer = 0;

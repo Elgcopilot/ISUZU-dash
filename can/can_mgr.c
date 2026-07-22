@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "can_mgr.h"
 #include "signals.h"
+#include "ui.h"
 #include <stdio.h>
 
 /* =========================================================
@@ -21,19 +22,160 @@
 #include <sched.h>
 #include <pthread.h>
 #include <math.h> // For sine wave simulation
+#include <time.h>
 
 static int s_rx = -1;
 static int s_tx = -1;
+static int s_scx = -1;
+
+#define SCX_FUNCTION_STATE_ID 0x121
+#define SCX_RPM_REPORT_ID     0x212
+#define SCX_RPM_PERIOD_MS     40
+#define SCX_HEARTBEAT_MS      3000
+
+static long long monotonic_milliseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long long)now.tv_sec * 1000LL + now.tv_nsec / 1000000LL;
+}
+
+static void scx_process_pressed_functions(uint32_t pressed_functions) {
+    if (pressed_functions & (1U << 0)) ui_request_navigation(UI_NAV_UP);     // Function 1
+    if (pressed_functions & (1U << 1)) ui_request_navigation(UI_NAV_LEFT);   // Function 2
+    if (pressed_functions & (1U << 2)) ui_request_navigation(UI_NAV_DOWN);   // Function 3
+    if (pressed_functions & (1U << 3)) ui_request_navigation(UI_NAV_RIGHT);  // Function 4
+    if (pressed_functions & (1U << 4)) ui_request_navigation(UI_NAV_ENTER);  // Function 5
+}
+
+void scx_can_init() {
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+    struct can_filter filter = {
+        .can_id = SCX_FUNCTION_STATE_ID,
+        .can_mask = CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG,
+    };
+
+    printf("SCX: Configuring interface can1 at 500 kbit/s...\n");
+    int command_result = system("sudo ip link set can1 down");
+    (void)command_result;
+    command_result = system("sudo ip link set can1 up type can bitrate 500000 sample-point 0.625 restart-ms 100");
+    (void)command_result;
+
+    if ((s_scx = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+        perror("SCX Socket");
+        return;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, "can1", IFNAMSIZ - 1);
+    if (ioctl(s_scx, SIOCGIFINDEX, &ifr) < 0) {
+        perror("SCX Interface");
+        close(s_scx);
+        s_scx = -1;
+        return;
+    }
+
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+    fcntl(s_scx, F_SETFL, O_NONBLOCK);
+    setsockopt(s_scx, SOL_CAN_RAW, CAN_RAW_FILTER, &filter, sizeof(filter));
+
+    int recv_own = 0;
+    setsockopt(s_scx, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS, &recv_own, sizeof(recv_own));
+    if (bind(s_scx, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("SCX Bind");
+        close(s_scx);
+        s_scx = -1;
+        return;
+    }
+
+    printf("SCX: CAN1 receiver and RPM sender ready\n");
+}
+
+void *scx_can_thread(void *arg) {
+    (void)arg;
+
+    uint32_t function_state = 0;
+    long long last_heartbeat = monotonic_milliseconds();
+    long long next_rpm_send = last_heartbeat;
+    bool heartbeat_missing_reported = false;
+    bool rpm_transmit_failed = false;
+
+    while (1) {
+        if (s_scx < 0) {
+            sleep(1);
+            continue;
+        }
+
+        struct can_frame frame;
+        while (read(s_scx, &frame, sizeof(frame)) == sizeof(frame)) {
+            if (frame.can_id != SCX_FUNCTION_STATE_ID || frame.can_dlc != 8 ||
+                frame.data[0] != 0 || frame.data[4] & 0xC0 ||
+                frame.data[5] != 0 || frame.data[6] != 0 || frame.data[7] != 0) {
+                continue;
+            }
+
+            uint32_t next_state = (uint32_t)frame.data[1] |
+                                  ((uint32_t)frame.data[2] << 8) |
+                                  ((uint32_t)frame.data[3] << 16) |
+                                  ((uint32_t)(frame.data[4] & 0x3F) << 24);
+            scx_process_pressed_functions(next_state & ~function_state);
+            function_state = next_state;
+            last_heartbeat = monotonic_milliseconds();
+            heartbeat_missing_reported = false;
+        }
+
+        long long now = monotonic_milliseconds();
+        if (now >= next_rpm_send) {
+            int rpm;
+            pthread_mutex_lock(&data_mutex);
+            rpm = v_data.rpm;
+            pthread_mutex_unlock(&data_mutex);
+
+            if (rpm < 0) rpm = 0;
+            if (rpm > 65535) rpm = 65535;
+
+            memset(&frame, 0, sizeof(frame));
+            frame.can_id = SCX_RPM_REPORT_ID;
+            frame.can_dlc = 8;
+            frame.data[6] = (uint8_t)(rpm >> 8);
+            frame.data[7] = (uint8_t)rpm;
+
+            if (write(s_scx, &frame, sizeof(frame)) < 0) {
+                if (!rpm_transmit_failed && errno != EAGAIN && errno != ENOBUFS) {
+                    perror("SCX RPM transmit");
+                }
+                rpm_transmit_failed = true;
+            } else {
+                if (rpm_transmit_failed) printf("SCX: RPM transmission restored\n");
+                rpm_transmit_failed = false;
+            }
+            next_rpm_send = now + SCX_RPM_PERIOD_MS;
+        }
+
+        if (!heartbeat_missing_reported && now - last_heartbeat >= SCX_HEARTBEAT_MS) {
+            printf("SCX: Function-state heartbeat missing; clearing button states\n");
+            function_state = 0;
+            heartbeat_missing_reported = true;
+        }
+
+        usleep(5000);
+    }
+
+    return NULL;
+}
 
 void can_init() {
     printf("CAN: Resetting interface can0...\n");
 
     // Force down
-    system("sudo ip link set can0 down");
+    int command_result = system("sudo ip link set can0 down");
+    (void)command_result;
     usleep(100000); // 100ms pause
 
     // Set bitrate and bring up with auto-restart
-    system("sudo ip link set can0 up type can bitrate 500000 restart-ms 100");
+    command_result = system("sudo ip link set can0 up type can bitrate 500000 restart-ms 100");
+    (void)command_result;
 
     // Give the kernel 1 second to initialize the driver
     sleep(1);

@@ -367,7 +367,7 @@ int main(void)
     ui_init();
 
     // 7. START DATA THREADS
-    pthread_t rx_th, tx_th, ads_th, lambda_th, gps_th, imu_th, mag_th, mqtt_th;
+    pthread_t rx_th, tx_th, scx_th, ads_th, lambda_th, gps_th, imu_th, mag_th, mqtt_th;
     
     // Start ADS1115 Pressure Sensor Thread (always runs)
     pthread_create(&ads_th, NULL, ads1115_thread, NULL);
@@ -417,6 +417,15 @@ int main(void)
         // Start Simulator (Generates Sine Wave Data)
         pthread_create(&rx_th, NULL, simulator_thread, NULL);
         pthread_setname_np(rx_th, "sim_data");
+    }
+
+    // CAN1 is dedicated to the SCX Hub: receive buttons and send CAN0 RPM.
+    if (access("/sys/class/net/can1", F_OK) == 0) {
+        scx_can_init();
+        pthread_create(&scx_th, NULL, scx_can_thread, NULL);
+        pthread_setname_np(scx_th, "scx_can");
+    } else {
+        printf("SCX: can1 not found; SCX controls disabled\n");
     }
 
     printf("UI Loop Started on Core 0.\n");
