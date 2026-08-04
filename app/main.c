@@ -13,6 +13,8 @@
 #include "mmc5983ma_mag.h"
 #include "mqtt_client.h"
 #include "config_parser.h"
+#include "csv_logger.h"
+#include "lap_timer.h"
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
@@ -97,15 +99,29 @@ void *gps_thread(void *arg) {
     
     printf("GPS M9N thread started\n");
     GPSData temp_gps = {0};
+    Config lap_config;
+    LapTimer lap_timer;
+    bool lap_timer_configured = config_load("/mnt/candata/config.txt", &lap_config);
+    if (lap_timer_configured) {
+        lap_timer_init(&lap_timer, &lap_config);
+    }
     
     while(1) {
         // Read GPS data from UART4
         gps_update(&temp_gps);
+
+        float lap_time = 0.0f;
+        bool lap_timing_active = false;
+        if (lap_timer_configured) {
+            lap_timer_update(&lap_timer, &temp_gps, &lap_time, &lap_timing_active);
+        }
         
         // Update global GPS data
         pthread_mutex_lock(&data_mutex);
         v_data.gps_data = temp_gps;
         v_data.gps_satellites = temp_gps.satellites_used;
+        v_data.current_lap_time = lap_time;
+        v_data.lap_timing_active = lap_timing_active;
         pthread_mutex_unlock(&data_mutex);
         
         // Read at 5 Hz (200ms interval)
@@ -258,6 +274,13 @@ void *mqtt_thread(void *arg) {
     }
     
     config_print(&config);
+
+    if (!csv_logger_init("/mnt/candata/data")) {
+        if (log) {
+            fprintf(log, "CSV: Logging disabled because the telemetry file could not be created\n");
+            fflush(log);
+        }
+    }
     
     // Initialize MQTT client
     if (log) {
@@ -290,9 +313,10 @@ void *mqtt_thread(void *arg) {
         local_data = v_data;
         pthread_mutex_unlock(&data_mutex);
         
-        // Publish to MQTT broker only when engine is running (RPM > 0)
-        if (mqtt_is_connected() && local_data.rpm > 0) {
+        // Testing mode: publish telemetry whenever MQTT is connected, including RPM 0.
+        if (mqtt_is_connected()) {
             if (mqtt_publish_telemetry(&local_data, &config)) {
+                csv_logger_append(&local_data, &config);
                 publish_count++;
                 if (log && (publish_count % 100 == 0)) {
                     fprintf(log, "MQTT: Published %d messages\n", publish_count);
@@ -321,6 +345,7 @@ void *mqtt_thread(void *arg) {
     }
     
     if (log) fclose(log);
+    csv_logger_close();
     mqtt_cleanup();
     return NULL;
 }

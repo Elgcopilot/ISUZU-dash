@@ -103,7 +103,8 @@ bool mqtt_publish_telemetry(const VehicleData *data, const Config *config) {
         return false;
     }
     
-    // Build datetime string from GPS time (UTC) when available.
+    // Build a UTC datetime string. GPS time is UTC; the system-clock fallback
+    // also uses UTC so the payload timezone never changes.
     char datetime[32];
     if (data->gps_data.time_valid) {
         time_t now = time(NULL);
@@ -113,7 +114,7 @@ bool mqtt_publish_telemetry(const VehicleData *data, const Config *config) {
                  data->gps_data.utc_hour, data->gps_data.utc_minute, data->gps_data.utc_second);
     } else {
         time_t now = time(NULL);
-        struct tm *tm_info = localtime(&now);
+        struct tm *tm_info = gmtime(&now);
         snprintf(datetime, sizeof(datetime), "%02d/%02d/%02d %02d:%02d:%02d",
                  tm_info->tm_mday, tm_info->tm_mon + 1, tm_info->tm_year % 100,
                  tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);

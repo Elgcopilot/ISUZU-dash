@@ -84,14 +84,14 @@ static lv_obj_t *p2_gps_title;  // GPS title with satellite count
 static lv_obj_t *sat_dots[MAX_SATELLITES];    // Pre-allocated dot pool
 static bool      sat_dots_visible[MAX_SATELLITES]; // fade-in/out state
 
-// Page 3 gauges: GPS LAT, GPS LONG, GPS TIME, G-Force LAT, G-Force LONG, Delta Time
-static lv_obj_t *arc_gps_lat, *lbl_gps_lat;
-static lv_obj_t *p3_arc_gps_long, *p3_lbl_gps_long;
+// Page 3 gauges: GPS speed, boost, GPS time, G-Force LAT, G-Force LONG, Lap Time
+static lv_obj_t *p3_lbl_gps_speed, *p3_lbl_top_speed;
+static lv_obj_t *p3_lbl_boost, *p3_lbl_max_boost;
 static lv_obj_t *p3_arc_gps_time, *p3_lbl_gps_time;
 static lv_obj_t *p3_arc_gforce_lat, *p3_lbl_gforce_lat;
 static lv_obj_t *p3_arc_gforce_long, *p3_lbl_gforce_long;
 static lv_obj_t *p3_arc_clt, *p3_lbl_clt;
-static lv_obj_t *p3_lbl_delta_time;  // Delta time display
+static lv_obj_t *p3_lbl_lap_time;  // Lap time display
 
 // Demo Counter
 #ifdef DEMO_MODE
@@ -402,7 +402,7 @@ static void process_navigation_requests(void) {
 }
 
 // --- Helper: create simple text display (no gauge) ---
-static void create_text_display(lv_obj_t *parent, const char *title, int col, int row, lv_obj_t **lbl_out) {
+static lv_obj_t *create_text_display(lv_obj_t *parent, const char *title, int col, int row, lv_obj_t **lbl_out) {
     int x_pos = GAUGE_GAP + (col * (GAUGE_WIDTH + GAUGE_GAP));
     int y_pos = GAUGE_GAP + (row * (GAUGE_HEIGHT + GAUGE_GAP));
     
@@ -433,6 +433,7 @@ static void create_text_display(lv_obj_t *parent, const char *title, int col, in
     lv_obj_align(lbl_val, LV_ALIGN_CENTER, 0, 10);
     
     *lbl_out = lbl_val;
+    return cont;
 }
 
 // Satellite dot opacity animation helpers
@@ -479,9 +480,9 @@ static lv_obj_t *create_gps_skyplot(lv_obj_t *parent, int col, int row) {
     lv_obj_set_style_border_color(cont, lv_color_hex(0x222222), 0);
     lv_obj_set_style_radius(cont, 10, 0);
     
-    // Title with satellite count
+    // Title shows only satellites used in a valid navigation solution.
     p2_gps_title = lv_label_create(cont);
-    lv_label_set_text(p2_gps_title, "GPS SATELLITES : 0");
+    lv_label_set_text(p2_gps_title, "GPS VALID : 0");
     lv_obj_set_style_text_font(p2_gps_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(p2_gps_title, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(p2_gps_title, LV_ALIGN_BOTTOM_MID, 0, -5);
@@ -543,16 +544,15 @@ static void update_gps_skyplot(lv_obj_t *skyplot, GPSData *gps_data) {
     int cy = GAUGE_HEIGHT / 2 - 5;
     int radius = 85;
 
-    // Title: keep last known count if GPS momentarily reports 0
-    static int last_num_sats = 0;
-    if (gps_data->num_satellites > 0)
-        last_num_sats = gps_data->num_satellites;
+    // Only a valid navigation solution contributes to the displayed count.
     if (p2_gps_title) {
-        static int displayed_num = -1;
-        if (last_num_sats != displayed_num) {
-            displayed_num = last_num_sats;
+        static int displayed_used = -1;
+        int used_sats = gps_data->fix_valid ? gps_data->satellites_used : 0;
+
+        if (used_sats != displayed_used) {
+            displayed_used = used_sats;
             char buf[64];
-            snprintf(buf, sizeof(buf), "GPS SATELLITES : %d", last_num_sats);
+            snprintf(buf, sizeof(buf), "GPS VALID : %d", used_sats);
             lv_label_set_text(p2_gps_title, buf);
         }
     }
@@ -646,18 +646,28 @@ void ui_init() {
     create_bold_gauge(page_cont[1], "DUTY INJ %", DUTY_MIN_PERCENT, DUTY_MAX_PERCENT, "25", "50", "75",  1, 1, &p2_arc_duty, &p2_lbl_duty);
     p2_gps_skyplot = create_gps_skyplot(page_cont[1], 2, 1);  // GPS Sky Plot
 
-    // --- PAGE 3: GPS LAT, GPS LONG, GPS TIME / G-Force LAT, G-Force LONG, Delta Time ---
+    // --- PAGE 3: GPS speed, Boost, GPS time / G-Force LAT, G-Force LONG, Lap Time ---
     page_cont[2] = create_page(layout);
-    create_text_display(page_cont[2], "GPS LAT °",      0, 0, &lbl_gps_lat);
-    create_text_display(page_cont[2], "GPS LONG °",     1, 0, &p3_lbl_gps_long);
+    lv_obj_t *p3_gps_speed_box = create_text_display(page_cont[2], "GPS SPEED (GPS)", 0, 0, &p3_lbl_gps_speed);
+    lv_obj_t *p3_boost_box = create_text_display(page_cont[2], "BOOST kPa", 1, 0, &p3_lbl_boost);
     create_text_display(page_cont[2], "GPS TIME",       2, 0, &p3_lbl_gps_time);
     create_text_display(page_cont[2], "G-FORCE LAT",    0, 1, &p3_lbl_gforce_lat);
     create_text_display(page_cont[2], "G-FORCE LONG",   1, 1, &p3_lbl_gforce_long);
-    create_text_display(page_cont[2], "DELTA TIME",     2, 1, &p3_lbl_delta_time);
+    create_text_display(page_cont[2], "LAP TIME",       2, 1, &p3_lbl_lap_time);
     
+    p3_lbl_top_speed = lv_label_create(p3_gps_speed_box);
+    lv_label_set_text(p3_lbl_top_speed, "TOP: 0 km/h");
+    lv_obj_set_style_text_font(p3_lbl_top_speed, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(p3_lbl_top_speed, lv_color_hex(0x888888), 0);
+    lv_obj_align(p3_lbl_top_speed, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+
+    p3_lbl_max_boost = lv_label_create(p3_boost_box);
+    lv_label_set_text(p3_lbl_max_boost, "MAX: 0 kPa");
+    lv_obj_set_style_text_font(p3_lbl_max_boost, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(p3_lbl_max_boost, lv_color_hex(0x888888), 0);
+    lv_obj_align(p3_lbl_max_boost, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+
     // Set unused arc pointers to NULL for page 3
-    arc_gps_lat = NULL;
-    p3_arc_gps_long = NULL;
     p3_arc_gps_time = NULL;
     p3_arc_gforce_lat = NULL;
     p3_arc_gforce_long = NULL;
@@ -799,29 +809,30 @@ void ui_update() {
     // GPS Sky Plot
     update_gps_skyplot(p2_gps_skyplot, &d.gps_data);
 
-    // --- PAGE 3: GPS LAT, GPS LONG, GPS TIME, G-Force LAT, G-Force LONG, Coolant ---
-    // GPS Latitude
-    if (lbl_gps_lat) {
-        if (d.gps_data.fix_valid) {
-            int lat_whole = (int)d.gps_data.latitude;
-            int lat_dec = (int)((d.gps_data.latitude - lat_whole) * 100);
-            if (lat_dec < 0) lat_dec = -lat_dec;
-            lv_label_set_text_fmt(lbl_gps_lat, "%d.%02d", lat_whole, lat_dec);
+    // --- PAGE 3: GPS speed, Boost, GPS time, G-Force LAT, G-Force LONG, Lap Time ---
+    static int top_gps_speed = 0;
+    static int max_boost_kpa = 0;
+
+    if (p3_lbl_gps_speed) {
+        if (d.gps_data.speed_valid) {
+            int gps_speed = (int)(d.gps_data.speed_kmh + 0.5);
+            if (gps_speed > top_gps_speed) top_gps_speed = gps_speed;
+            lv_label_set_text_fmt(p3_lbl_gps_speed, "%d", gps_speed);
         } else {
-            lv_label_set_text(lbl_gps_lat, "--");
+            lv_label_set_text(p3_lbl_gps_speed, "--");
         }
     }
-    
-    // GPS Longitude
-    if (p3_lbl_gps_long) {
-        if (d.gps_data.fix_valid) {
-            int lon_whole = (int)d.gps_data.longitude;
-            int lon_dec = (int)((d.gps_data.longitude - lon_whole) * 100);
-            if (lon_dec < 0) lon_dec = -lon_dec;
-            lv_label_set_text_fmt(p3_lbl_gps_long, "%d.%02d", lon_whole, lon_dec);
-        } else {
-            lv_label_set_text(p3_lbl_gps_long, "--");
-        }
+    if (p3_lbl_top_speed) {
+        lv_label_set_text_fmt(p3_lbl_top_speed, "TOP: %d km/h", top_gps_speed);
+    }
+
+    int boost_kpa = (int)(sm.boost + 0.5f);
+    if (d.boost > max_boost_kpa) max_boost_kpa = d.boost;
+    if (p3_lbl_boost) {
+        lv_label_set_text_fmt(p3_lbl_boost, "%d", boost_kpa);
+    }
+    if (p3_lbl_max_boost) {
+        lv_label_set_text_fmt(p3_lbl_max_boost, "MAX: %d kPa", max_boost_kpa);
     }
     
     // GPS Time (UTC+7 for Thailand)
@@ -850,34 +861,22 @@ void ui_update() {
         lv_label_set_text_fmt(p3_lbl_gforce_long, "%d.%d", whole, dec);
     }
     
-    // Delta Time (racing telemetry)
-    if (p3_lbl_delta_time) {
-        // Check if we have a valid reference lap time
-        if (d.reference_lap_time > 0.0f) {
-            float delta = d.delta_time;
-            
-            // Format: +X.XX or -X.XX
-            int whole = (int)delta;
-            int dec = (int)((delta - whole) * 100);
-            if (dec < 0) dec = -dec;
-            
-            char sign = (delta >= 0) ? '+' : '-';
-            if (delta < 0) whole = -whole;
-            
-            lv_label_set_text_fmt(p3_lbl_delta_time, "%c%d.%02d", sign, whole, dec);
-            
-            // Color logic for racing: Green=faster (negative), Red=slower (positive), White=neutral
-            if (delta < -0.05f) {
-                lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0x00FF00), 0); // Green (faster)
-            } else if (delta > 0.05f) {
-                lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0xFF0000), 0); // Red (slower)
-            } else {
-                lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0xFFFFFF), 0); // White (neutral)
+    // Lap Time (GPS start/finish polygons)
+    if (p3_lbl_lap_time) {
+        if (d.lap_timing_active || d.current_lap_time > 0.0f) {
+            int minutes = (int)(d.current_lap_time / 60.0f);
+            float seconds = d.current_lap_time - (float)minutes * 60.0f;
+            int centiseconds = (int)(seconds * 100.0f + 0.5f);
+            if (centiseconds >= 6000) {
+                minutes++;
+                centiseconds = 0;
             }
+            lv_label_set_text_fmt(p3_lbl_lap_time, "%d:%02d.%02d", minutes,
+                                  centiseconds / 100, centiseconds % 100);
+            lv_obj_set_style_text_color(p3_lbl_lap_time, lv_color_hex(0xFFFFFF), 0);
         } else {
-            // No reference lap time - show placeholder
-            lv_label_set_text(p3_lbl_delta_time, "--:--");
-            lv_obj_set_style_text_color(p3_lbl_delta_time, lv_color_hex(0x888888), 0); // Grey
+            lv_label_set_text(p3_lbl_lap_time, "--:--");
+            lv_obj_set_style_text_color(p3_lbl_lap_time, lv_color_hex(0x888888), 0);
         }
     }
 

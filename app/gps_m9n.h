@@ -22,11 +22,13 @@ typedef struct {
     // Position and time
     double latitude;   // Decimal degrees
     double longitude;  // Decimal degrees
+    double speed_kmh;  // Ground speed from RMC, kilometres per hour
     int utc_hour;      // UTC time
     int utc_minute;
     int utc_second;
     bool time_valid;   // Time data valid
     bool fix_valid;    // GPS position fix status
+    bool speed_valid;  // RMC reports a valid ground speed
 } GPSData;
 
 // Initialize GPS UART (UART4, 38400 baud)

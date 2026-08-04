@@ -237,6 +237,32 @@ static void parse_gga(const char *sentence, GPSData *gps_data) {
     }
 }
 
+// Parse RMC sentence for ground speed
+// $GNRMC,hhmmss.ss,A,ddmm.mmmm,N,dddmm.mmmm,E,speed_knots,course,date,...*CS
+static void parse_rmc(const char *sentence, GPSData *gps_data) {
+    if (!nmea_checksum_valid(sentence)) return;
+
+    char *tokens[16];
+    char buf[256];
+    strncpy(buf, sentence, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    int token_count = 0;
+    char *token = strtok(buf, ",*");
+    while (token && token_count < 16) {
+        tokens[token_count++] = token;
+        token = strtok(NULL, ",*");
+    }
+
+    if (token_count < 8 || tokens[2][0] != 'A' || tokens[7][0] == '\0') {
+        gps_data->speed_valid = false;
+        return;
+    }
+
+    gps_data->speed_kmh = atof(tokens[7]) * 1.852;
+    gps_data->speed_valid = true;
+}
+
 void gps_update(GPSData *gps_data) {
     if (gps_fd < 0) return;
     
@@ -253,6 +279,8 @@ void gps_update(GPSData *gps_data) {
                     parse_gsa(line_buffer, gps_data);
                 } else if (strstr(line_buffer, "$G") && strstr(line_buffer, "GGA")) {
                     parse_gga(line_buffer, gps_data);
+                } else if (strstr(line_buffer, "$G") && strstr(line_buffer, "RMC")) {
+                    parse_rmc(line_buffer, gps_data);
                 }
                 
                 buf_pos = 0;

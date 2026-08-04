@@ -46,6 +46,8 @@ set(SOURCES
     app/mmc5983ma_mag.c
     app/mqtt_client.c
     app/config_parser.c
+    app/csv_logger.c
+    app/lap_timer.c
     can/can_mgr.c
     decode/signals.c
     ui/ui.c

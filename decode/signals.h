@@ -51,9 +51,10 @@ typedef struct {
     GPSData gps_data;      // GPS satellite data for sky plot
     
     // Racing telemetry
-    float delta_time;      // Delta time vs reference lap (negative = faster)
-    float current_lap_time; // Current lap time in seconds
+    float delta_time;       // Delta time vs reference lap (negative = faster)
+    float current_lap_time; // Running or most recently completed lap time in seconds
     float reference_lap_time; // Reference lap time in seconds
+    bool lap_timing_active; // True between valid START and FINISH crossings
     
     // Status
     bool can_connected;
