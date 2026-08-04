@@ -15,6 +15,7 @@
 #include "config_parser.h"
 #include "csv_logger.h"
 #include "lap_timer.h"
+#include "track_config.h"
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
@@ -24,6 +25,7 @@
 #include "app_config.h"
 
 #define DISP_BUF_SIZE (800 * 480 / 10)
+#define GPS_UPDATE_INTERVAL_US 66667  // 15 Hz
 
 // ADS1115 Pressure Sensor Thread
 void *ads1115_thread(void *arg) {
@@ -99,11 +101,13 @@ void *gps_thread(void *arg) {
     
     printf("GPS M9N thread started\n");
     GPSData temp_gps = {0};
-    Config lap_config;
+    TrackConfig track_config;
     LapTimer lap_timer;
-    bool lap_timer_configured = config_load("/mnt/candata/config.txt", &lap_config);
+    bool lap_timer_configured = track_config_load("/mnt/candata/config/track.json", &track_config);
     if (lap_timer_configured) {
-        lap_timer_init(&lap_timer, &lap_config);
+        lap_timer_init(&lap_timer, &track_config);
+    } else {
+        printf("Lap timer disabled: track configuration could not be loaded\n");
     }
     
     while(1) {
@@ -111,9 +115,13 @@ void *gps_thread(void *arg) {
         gps_update(&temp_gps);
 
         float lap_time = 0.0f;
+        float best_lap_time = 0.0f;
+        float lap_delta = 0.0f;
         bool lap_timing_active = false;
+        bool lap_delta_valid = false;
         if (lap_timer_configured) {
-            lap_timer_update(&lap_timer, &temp_gps, &lap_time, &lap_timing_active);
+            lap_timer_update(&lap_timer, &temp_gps, &lap_time, &lap_timing_active,
+                             &best_lap_time, &lap_delta, &lap_delta_valid);
         }
         
         // Update global GPS data
@@ -121,11 +129,15 @@ void *gps_thread(void *arg) {
         v_data.gps_data = temp_gps;
         v_data.gps_satellites = temp_gps.satellites_used;
         v_data.current_lap_time = lap_time;
+        v_data.best_lap_time = best_lap_time;
+        v_data.delta_time = lap_delta;
+        v_data.lap_delta_valid = lap_delta_valid;
         v_data.lap_timing_active = lap_timing_active;
         pthread_mutex_unlock(&data_mutex);
         
-        // Read at 5 Hz (200ms interval)
-        usleep(200000);
+        // Refresh GPS speed and running lap time at 15 Hz.
+        // New GPS coordinates/speed still depend on the receiver's NMEA output rate.
+        usleep(GPS_UPDATE_INTERVAL_US);
     }
     
     gps_close();

@@ -54,6 +54,8 @@ typedef struct {
     float delta_time;       // Delta time vs reference lap (negative = faster)
     float current_lap_time; // Running or most recently completed lap time in seconds
     float reference_lap_time; // Reference lap time in seconds
+    float best_lap_time;    // Fastest completed lap in the current application session
+    bool lap_delta_valid;   // True after a lap completes with an existing best reference
     bool lap_timing_active; // True between valid START and FINISH crossings
     
     // Status

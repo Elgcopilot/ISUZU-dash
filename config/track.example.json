@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "active_event_id": "example_separate",
+  "events": [
+    {
+      "event_id": "example_separate",
+      "track_id": "example_track",
+      "track_name": "Example Track",
+      "event_name": "Example Separate Start/Finish",
+      "lap_mode": "separate",
+      "enabled": true,
+      "min_lap_seconds": 10,
+      "min_speed_kmh": 20,
+      "start_polygon": [
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 }
+      ],
+      "finish_polygon": [
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 }
+      ]
+    },
+    {
+      "event_id": "example_shared",
+      "track_id": "example_shared_track",
+      "track_name": "Example Shared Line Track",
+      "event_name": "Example Shared Start/Finish",
+      "lap_mode": "shared",
+      "enabled": false,
+      "min_lap_seconds": 10,
+      "min_speed_kmh": 20,
+      "start_finish_polygon": [
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 },
+        { "lat": 0.0, "lon": 0.0 }
+      ]
+    }
+  ]
+}

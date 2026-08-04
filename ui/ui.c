@@ -88,10 +88,10 @@ static bool      sat_dots_visible[MAX_SATELLITES]; // fade-in/out state
 static lv_obj_t *p3_lbl_gps_speed, *p3_lbl_top_speed;
 static lv_obj_t *p3_lbl_boost, *p3_lbl_max_boost;
 static lv_obj_t *p3_arc_gps_time, *p3_lbl_gps_time;
-static lv_obj_t *p3_arc_gforce_lat, *p3_lbl_gforce_lat;
-static lv_obj_t *p3_arc_gforce_long, *p3_lbl_gforce_long;
+static lv_obj_t *p3_arc_gforce_lat, *p3_lbl_gforce_lat, *p3_lbl_max_gforce_lat;
+static lv_obj_t *p3_arc_gforce_long, *p3_lbl_gforce_long, *p3_lbl_max_gforce_long;
 static lv_obj_t *p3_arc_clt, *p3_lbl_clt;
-static lv_obj_t *p3_lbl_lap_time;  // Lap time display
+static lv_obj_t *p3_lbl_lap_time, *p3_lbl_best_lap_time, *p3_lbl_lap_delta;
 
 // Demo Counter
 #ifdef DEMO_MODE
@@ -651,9 +651,9 @@ void ui_init() {
     lv_obj_t *p3_gps_speed_box = create_text_display(page_cont[2], "GPS SPEED (GPS)", 0, 0, &p3_lbl_gps_speed);
     lv_obj_t *p3_boost_box = create_text_display(page_cont[2], "BOOST kPa", 1, 0, &p3_lbl_boost);
     create_text_display(page_cont[2], "GPS TIME",       2, 0, &p3_lbl_gps_time);
-    create_text_display(page_cont[2], "G-FORCE LAT",    0, 1, &p3_lbl_gforce_lat);
-    create_text_display(page_cont[2], "G-FORCE LONG",   1, 1, &p3_lbl_gforce_long);
-    create_text_display(page_cont[2], "LAP TIME",       2, 1, &p3_lbl_lap_time);
+    lv_obj_t *p3_gforce_lat_box = create_text_display(page_cont[2], "G-FORCE LAT", 0, 1, &p3_lbl_gforce_lat);
+    lv_obj_t *p3_gforce_long_box = create_text_display(page_cont[2], "G-FORCE LONG", 1, 1, &p3_lbl_gforce_long);
+    lv_obj_t *p3_lap_time_box = create_text_display(page_cont[2], "LAP TIME", 2, 1, &p3_lbl_lap_time);
     
     p3_lbl_top_speed = lv_label_create(p3_gps_speed_box);
     lv_label_set_text(p3_lbl_top_speed, "TOP: 0 km/h");
@@ -666,6 +666,30 @@ void ui_init() {
     lv_obj_set_style_text_font(p3_lbl_max_boost, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(p3_lbl_max_boost, lv_color_hex(0x888888), 0);
     lv_obj_align(p3_lbl_max_boost, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+
+    p3_lbl_max_gforce_lat = lv_label_create(p3_gforce_lat_box);
+    lv_label_set_text(p3_lbl_max_gforce_lat, "MAX: 0.0 g");
+    lv_obj_set_style_text_font(p3_lbl_max_gforce_lat, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(p3_lbl_max_gforce_lat, lv_color_hex(0x888888), 0);
+    lv_obj_align(p3_lbl_max_gforce_lat, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+
+    p3_lbl_max_gforce_long = lv_label_create(p3_gforce_long_box);
+    lv_label_set_text(p3_lbl_max_gforce_long, "MAX: 0.0 g");
+    lv_obj_set_style_text_font(p3_lbl_max_gforce_long, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(p3_lbl_max_gforce_long, lv_color_hex(0x888888), 0);
+    lv_obj_align(p3_lbl_max_gforce_long, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+
+    p3_lbl_best_lap_time = lv_label_create(p3_lap_time_box);
+    lv_label_set_text(p3_lbl_best_lap_time, "BEST: --:--");
+    lv_obj_set_style_text_font(p3_lbl_best_lap_time, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(p3_lbl_best_lap_time, lv_color_hex(0x888888), 0);
+    lv_obj_align(p3_lbl_best_lap_time, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+
+    p3_lbl_lap_delta = lv_label_create(p3_lap_time_box);
+    lv_label_set_text(p3_lbl_lap_delta, "DELTA: --");
+    lv_obj_set_style_text_font(p3_lbl_lap_delta, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(p3_lbl_lap_delta, lv_color_hex(0x888888), 0);
+    lv_obj_align(p3_lbl_lap_delta, LV_ALIGN_BOTTOM_LEFT, 10, -10);
 
     // Set unused arc pointers to NULL for page 3
     p3_arc_gps_time = NULL;
@@ -812,6 +836,8 @@ void ui_update() {
     // --- PAGE 3: GPS speed, Boost, GPS time, G-Force LAT, G-Force LONG, Lap Time ---
     static int top_gps_speed = 0;
     static int max_boost_kpa = 0;
+    static float max_gforce_lat = 0.0f;
+    static float max_gforce_long = 0.0f;
 
     if (p3_lbl_gps_speed) {
         if (d.gps_data.speed_valid) {
@@ -852,6 +878,17 @@ void ui_update() {
         if (dec < 0) dec = -dec;
         lv_label_set_text_fmt(p3_lbl_gforce_lat, "%d.%d", whole, dec);
     }
+    float abs_gforce_lat = fabsf(d.g_force_lat);
+    if (abs_gforce_lat > max_gforce_lat) max_gforce_lat = abs_gforce_lat;
+    if (p3_lbl_max_gforce_lat) {
+        int whole = (int)max_gforce_lat;
+        int dec = (int)((max_gforce_lat - whole) * 10.0f + 0.5f);
+        if (dec >= 10) {
+            whole++;
+            dec = 0;
+        }
+        lv_label_set_text_fmt(p3_lbl_max_gforce_lat, "MAX: %d.%d g", whole, dec);
+    }
     
     // G-Force Longitudinal
     if (p3_lbl_gforce_long) {
@@ -859,6 +896,17 @@ void ui_update() {
         int dec = (int)((d.g_force_long - whole) * 10);
         if (dec < 0) dec = -dec;
         lv_label_set_text_fmt(p3_lbl_gforce_long, "%d.%d", whole, dec);
+    }
+    float abs_gforce_long = fabsf(d.g_force_long);
+    if (abs_gforce_long > max_gforce_long) max_gforce_long = abs_gforce_long;
+    if (p3_lbl_max_gforce_long) {
+        int whole = (int)max_gforce_long;
+        int dec = (int)((max_gforce_long - whole) * 10.0f + 0.5f);
+        if (dec >= 10) {
+            whole++;
+            dec = 0;
+        }
+        lv_label_set_text_fmt(p3_lbl_max_gforce_long, "MAX: %d.%d g", whole, dec);
     }
     
     // Lap Time (GPS start/finish polygons)
@@ -877,6 +925,42 @@ void ui_update() {
         } else {
             lv_label_set_text(p3_lbl_lap_time, "--:--");
             lv_obj_set_style_text_color(p3_lbl_lap_time, lv_color_hex(0x888888), 0);
+        }
+    }
+    if (p3_lbl_best_lap_time && d.best_lap_time > 0.0f) {
+        int minutes = (int)(d.best_lap_time / 60.0f);
+        float seconds = d.best_lap_time - (float)minutes * 60.0f;
+        int centiseconds = (int)(seconds * 100.0f + 0.5f);
+        if (centiseconds >= 6000) {
+            minutes++;
+            centiseconds = 0;
+        }
+        lv_label_set_text_fmt(p3_lbl_best_lap_time, "BEST: %d:%02d.%02d", minutes,
+                              centiseconds / 100, centiseconds % 100);
+        lv_obj_set_style_text_color(p3_lbl_best_lap_time, lv_color_hex(0x00FF00), 0);
+    }
+    if (p3_lbl_lap_delta) {
+        if (d.lap_delta_valid) {
+            float absolute_delta = fabsf(d.delta_time);
+            int whole = (int)absolute_delta;
+            int centiseconds = (int)((absolute_delta - (float)whole) * 100.0f + 0.5f);
+            if (centiseconds >= 100) {
+                whole++;
+                centiseconds = 0;
+            }
+            lv_label_set_text_fmt(p3_lbl_lap_delta, "DELTA: %c%d.%02d",
+                                  d.delta_time < 0.0f ? '-' : '+', whole, centiseconds);
+
+            if (d.delta_time < -0.05f) {
+                lv_obj_set_style_text_color(p3_lbl_lap_delta, lv_color_hex(0x00FF00), 0);
+            } else if (d.delta_time > 0.05f) {
+                lv_obj_set_style_text_color(p3_lbl_lap_delta, lv_color_hex(0xFF0000), 0);
+            } else {
+                lv_obj_set_style_text_color(p3_lbl_lap_delta, lv_color_hex(0xFFFFFF), 0);
+            }
+        } else {
+            lv_label_set_text(p3_lbl_lap_delta, "DELTA: --");
+            lv_obj_set_style_text_color(p3_lbl_lap_delta, lv_color_hex(0x888888), 0);
         }
     }
 

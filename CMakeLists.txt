@@ -48,6 +48,7 @@ set(SOURCES
     app/config_parser.c
     app/csv_logger.c
     app/lap_timer.c
+    app/track_config.c
     can/can_mgr.c
     decode/signals.c
     ui/ui.c
@@ -57,4 +58,8 @@ set(SOURCES
 add_executable(isuzu_mfd ${SOURCES})
 
 # Link libraries (m = math, pthread = threads, paho-mqtt3c = MQTT client)
-target_link_libraries(isuzu_mfd lvgl lv_drivers m pthread paho-mqtt3c)
+find_path(JSONC_INCLUDE_DIR json-c/json.h REQUIRED)
+find_library(JSONC_LIBRARY NAMES json-c REQUIRED)
+
+target_include_directories(isuzu_mfd PRIVATE ${JSONC_INCLUDE_DIR})
+target_link_libraries(isuzu_mfd lvgl lv_drivers m pthread paho-mqtt3c ${JSONC_LIBRARY})
