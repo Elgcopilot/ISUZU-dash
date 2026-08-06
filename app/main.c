@@ -287,12 +287,6 @@ void *mqtt_thread(void *arg) {
     
     config_print(&config);
 
-    if (!csv_logger_init("/mnt/candata/data")) {
-        if (log) {
-            fprintf(log, "CSV: Logging disabled because the telemetry file could not be created\n");
-            fflush(log);
-        }
-    }
     
     // Initialize MQTT client
     if (log) {
@@ -300,23 +294,20 @@ void *mqtt_thread(void *arg) {
         fflush(log);
     }
     
-    while (!mqtt_init(&config)) {
+    time_t next_mqtt_reconnect = 0;
+    if (!mqtt_init(&config)) {
         if (log) {
             fprintf(log, "MQTT: Initial connect failed, retrying in 5 seconds...\n");
             fflush(log);
         }
         printf("MQTT: Initial connect failed, retrying in 5 seconds...\n");
         mqtt_cleanup();
-        sleep(5);
+        next_mqtt_reconnect = time(NULL) + 5;
+    } else {
+        printf("MQTT telemetry thread started\n");
     }
     
-    if (log) {
-        fprintf(log, "MQTT telemetry thread started successfully\n");
-        fflush(log);
-    }
-    printf("MQTT telemetry thread started\n");
-    
-    // Publish telemetry at 25 Hz (every 40ms)
+    // Publish telemetry at 25 Hz (every 40ms).
     int publish_count = 0;
     while(1) {
         // Copy vehicle data with mutex protection
@@ -324,11 +315,10 @@ void *mqtt_thread(void *arg) {
         pthread_mutex_lock(&data_mutex);
         local_data = v_data;
         pthread_mutex_unlock(&data_mutex);
-        
+
         // Testing mode: publish telemetry whenever MQTT is connected, including RPM 0.
         if (mqtt_is_connected()) {
             if (mqtt_publish_telemetry(&local_data, &config)) {
-                csv_logger_append(&local_data, &config);
                 publish_count++;
                 if (log && (publish_count % 100 == 0)) {
                     fprintf(log, "MQTT: Published %d messages\n", publish_count);
@@ -341,24 +331,66 @@ void *mqtt_thread(void *arg) {
                 }
                 printf("MQTT: Failed to publish telemetry\n");
             }
-        } else if (!mqtt_is_connected()) {
-            // Try to reconnect
+        }
+
+        if (!mqtt_is_connected() && time(NULL) >= next_mqtt_reconnect) {
+            // Reconnect in the background so an offline broker never pauses CSV logging.
             if (log) {
                 fprintf(log, "MQTT: Reconnecting...\n");
                 fflush(log);
             }
             printf("MQTT: Reconnecting...\n");
             mqtt_cleanup();
-            sleep(5);
-            mqtt_init(&config);
+            if (mqtt_init(&config)) {
+                if (log) {
+                    fprintf(log, "MQTT: Reconnected successfully\n");
+                    fflush(log);
+                }
+            } else {
+                mqtt_cleanup();
+                next_mqtt_reconnect = time(NULL) + 5;
+            }
         }
         // Publish at 25 Hz (40ms interval)
         usleep(40000);
     }
     
     if (log) fclose(log);
-    csv_logger_close();
     mqtt_cleanup();
+    return NULL;
+}
+
+// Local CSV logger thread. It is deliberately independent from MQTT so an
+// unavailable broker or internet connection never pauses telemetry recording.
+void *csv_thread(void *arg) {
+    (void)arg;
+
+    Config config;
+    if (!config_load("/mnt/candata/config.txt", &config)) {
+        printf("Failed to load config.txt, CSV logging disabled\n");
+        return NULL;
+    }
+
+    if (!csv_logger_init("/mnt/candata/data")) {
+        printf("Failed to initialize CSV logger\n");
+        return NULL;
+    }
+
+    printf("CSV telemetry logger thread started\n");
+    while (1) {
+        VehicleData local_data;
+        pthread_mutex_lock(&data_mutex);
+        local_data = v_data;
+        pthread_mutex_unlock(&data_mutex);
+
+        if (!csv_logger_append(&local_data, &config)) {
+            printf("CSV: Failed to append telemetry\n");
+        }
+
+        usleep(40000);
+    }
+
+    csv_logger_close();
     return NULL;
 }
 
@@ -404,7 +436,7 @@ int main(void)
     ui_init();
 
     // 7. START DATA THREADS
-    pthread_t rx_th, tx_th, scx_th, ads_th, lambda_th, gps_th, imu_th, mag_th, mqtt_th;
+    pthread_t rx_th, tx_th, scx_th, ads_th, lambda_th, gps_th, imu_th, mag_th, csv_th, mqtt_th;
     
     // Start ADS1115 Pressure Sensor Thread (always runs)
     pthread_create(&ads_th, NULL, ads1115_thread, NULL);
@@ -430,6 +462,11 @@ int main(void)
     pthread_create(&mag_th, NULL, mag_thread, NULL);
     pthread_setname_np(mag_th, "mmc5983ma");
     printf("MMC5983MA magnetometer thread started\n");
+
+    // Start local CSV telemetry logging before MQTT; it continues while offline.
+    pthread_create(&csv_th, NULL, csv_thread, NULL);
+    pthread_setname_np(csv_th, "csv_log");
+    printf("CSV telemetry logger thread started\n");
     
     // Start MQTT Telemetry Thread (always runs)
     pthread_create(&mqtt_th, NULL, mqtt_thread, NULL);
