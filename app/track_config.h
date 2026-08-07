@@ -26,4 +26,9 @@ typedef struct {
 
 bool track_config_load(const char *filename, TrackConfig *track);
 
+// Load the first enabled event whose configured start or finish zone contains
+// the supplied GPS position. Returns false when no enabled event matches.
+bool track_config_load_by_position(const char *filename, double latitude,
+                                   double longitude, TrackConfig *track);
+
 #endif // TRACK_CONFIG_H

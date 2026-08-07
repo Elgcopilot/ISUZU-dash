@@ -103,16 +103,25 @@ void *gps_thread(void *arg) {
     GPSData temp_gps = {0};
     TrackConfig track_config;
     LapTimer lap_timer;
-    bool lap_timer_configured = track_config_load("/mnt/candata/config/track.json", &track_config);
-    if (lap_timer_configured) {
-        lap_timer_init(&lap_timer, &track_config);
-    } else {
-        printf("Lap timer disabled: track configuration could not be loaded\n");
-    }
+    bool lap_timer_configured = false;
+    bool track_selected = false;
     
     while(1) {
         // Read GPS data from UART4
         gps_update(&temp_gps);
+
+        // Lock to the first enabled event whose start/finish zone the vehicle
+        // enters. This removes the need to edit active_event_id per event.
+        if (!track_selected && temp_gps.fix_valid) {
+            if (track_config_load_by_position("/mnt/candata/config/track.json",
+                                              temp_gps.latitude, temp_gps.longitude,
+                                              &track_config)) {
+                lap_timer_switch_event(&lap_timer, &track_config);
+                lap_timer_configured = true;
+                track_selected = true;
+                printf("Lap timer: automatically selected event '%s'\n", track_config.event_id);
+            }
+        }
 
         float lap_time = 0.0f;
         float best_lap_time = 0.0f;

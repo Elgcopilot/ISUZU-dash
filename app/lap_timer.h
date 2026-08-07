@@ -21,6 +21,7 @@ typedef struct {
 } LapTimer;
 
 void lap_timer_init(LapTimer *timer, const TrackConfig *track);
+void lap_timer_switch_event(LapTimer *timer, const TrackConfig *track);
 void lap_timer_update(LapTimer *timer, const GPSData *gps, float *lap_time_seconds,
                       bool *timing_active, float *best_lap_time, float *lap_delta,
                       bool *lap_delta_valid);

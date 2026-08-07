@@ -52,6 +52,71 @@ static bool event_matches_active_id(struct json_object *event, const char *activ
            strcmp(json_object_get_string(event_id), active_event_id) == 0;
 }
 
+static bool load_event(struct json_object *selected_event, TrackConfig *track) {
+    struct json_object *enabled;
+    if (!json_object_object_get_ex(selected_event, "enabled", &enabled) ||
+        !json_object_get_boolean(enabled)) {
+        return false;
+    }
+
+    memset(track, 0, sizeof(*track));
+    track->min_lap_time_seconds = 10;
+    if (!copy_required_string(selected_event, "event_id", track->event_id, sizeof(track->event_id)) ||
+        !copy_required_string(selected_event, "event_name", track->event_name, sizeof(track->event_name)) ||
+        !copy_required_string(selected_event, "track_id", track->track_id, sizeof(track->track_id)) ||
+        !copy_required_string(selected_event, "track_name", track->track_name, sizeof(track->track_name))) {
+        fprintf(stderr, "Track config error: selected event has missing identity fields\n");
+        return false;
+    }
+
+    struct json_object *lap_mode;
+    if (!json_object_object_get_ex(selected_event, "lap_mode", &lap_mode) ||
+        !json_object_is_type(lap_mode, json_type_string)) {
+        fprintf(stderr, "Track config error: lap_mode is required\n");
+        return false;
+    }
+
+    const char *mode = json_object_get_string(lap_mode);
+    if (strcmp(mode, "separate") == 0) {
+        track->lap_mode = TRACK_LAP_MODE_SEPARATE;
+        if (!parse_polygon(selected_event, "start_polygon", &track->start_polygon) ||
+            !parse_polygon(selected_event, "finish_polygon", &track->finish_polygon)) {
+            fprintf(stderr, "Track config error: separate mode requires valid start_polygon and finish_polygon\n");
+            return false;
+        }
+    } else if (strcmp(mode, "shared") == 0) {
+        track->lap_mode = TRACK_LAP_MODE_SHARED;
+        if (!parse_polygon(selected_event, "start_finish_polygon", &track->start_polygon)) {
+            fprintf(stderr, "Track config error: shared mode requires a valid start_finish_polygon\n");
+            return false;
+        }
+        track->finish_polygon = track->start_polygon;
+    } else {
+        fprintf(stderr, "Track config error: lap_mode must be 'separate' or 'shared'\n");
+        return false;
+    }
+
+    struct json_object *min_lap_seconds;
+    if (json_object_object_get_ex(selected_event, "min_lap_seconds", &min_lap_seconds)) {
+        int seconds = json_object_get_int(min_lap_seconds);
+        if (seconds > 0) track->min_lap_time_seconds = seconds;
+    }
+
+    struct json_object *min_speed_kmh;
+    if (json_object_object_get_ex(selected_event, "min_speed_kmh", &min_speed_kmh)) {
+        track->min_speed_kmh = (float)json_object_get_double(min_speed_kmh);
+    }
+
+    return true;
+}
+
+static void print_loaded_track(const TrackConfig *track, const char *selection_method) {
+    printf("Track %s: %s / %s (%s mode, minimum lap %ds, minimum speed %.1f km/h)\n",
+           selection_method, track->track_name, track->event_name,
+           track->lap_mode == TRACK_LAP_MODE_SHARED ? "shared" : "separate",
+           track->min_lap_time_seconds, track->min_speed_kmh);
+}
+
 bool track_config_load(const char *filename, TrackConfig *track) {
     struct json_object *root = json_object_from_file(filename);
     if (root == NULL) {
@@ -71,81 +136,58 @@ bool track_config_load(const char *filename, TrackConfig *track) {
     }
 
     const char *active_id = json_object_get_string(active_event_id);
-    struct json_object *selected_event = NULL;
     size_t event_count = json_object_array_length(events);
     for (size_t i = 0; i < event_count; i++) {
         struct json_object *event = json_object_array_get_idx(events, i);
         if (json_object_is_type(event, json_type_object) && event_matches_active_id(event, active_id)) {
-            selected_event = event;
+            ok = load_event(event, track);
             break;
         }
     }
 
-    if (selected_event == NULL) {
-        fprintf(stderr, "Track config error: active_event_id '%s' was not found\n", active_id);
-        goto cleanup;
-    }
-
-    struct json_object *enabled;
-    if (!json_object_object_get_ex(selected_event, "enabled", &enabled) ||
-        !json_object_get_boolean(enabled)) {
-        fprintf(stderr, "Track config error: event '%s' is disabled\n", active_id);
-        goto cleanup;
-    }
-
-    memset(track, 0, sizeof(*track));
-    track->min_lap_time_seconds = 10;
-    if (!copy_required_string(selected_event, "event_id", track->event_id, sizeof(track->event_id)) ||
-        !copy_required_string(selected_event, "event_name", track->event_name, sizeof(track->event_name)) ||
-        !copy_required_string(selected_event, "track_id", track->track_id, sizeof(track->track_id)) ||
-        !copy_required_string(selected_event, "track_name", track->track_name, sizeof(track->track_name))) {
-        fprintf(stderr, "Track config error: selected event has missing identity fields\n");
-        goto cleanup;
-    }
-
-    struct json_object *lap_mode;
-    if (!json_object_object_get_ex(selected_event, "lap_mode", &lap_mode) ||
-        !json_object_is_type(lap_mode, json_type_string)) {
-        fprintf(stderr, "Track config error: lap_mode is required\n");
-        goto cleanup;
-    }
-
-    const char *mode = json_object_get_string(lap_mode);
-    if (strcmp(mode, "separate") == 0) {
-        track->lap_mode = TRACK_LAP_MODE_SEPARATE;
-        if (!parse_polygon(selected_event, "start_polygon", &track->start_polygon) ||
-            !parse_polygon(selected_event, "finish_polygon", &track->finish_polygon)) {
-            fprintf(stderr, "Track config error: separate mode requires valid start_polygon and finish_polygon\n");
-            goto cleanup;
-        }
-    } else if (strcmp(mode, "shared") == 0) {
-        track->lap_mode = TRACK_LAP_MODE_SHARED;
-        if (!parse_polygon(selected_event, "start_finish_polygon", &track->start_polygon)) {
-            fprintf(stderr, "Track config error: shared mode requires a valid start_finish_polygon\n");
-            goto cleanup;
-        }
-        track->finish_polygon = track->start_polygon;
+    if (!ok) {
+        fprintf(stderr, "Track config error: active event '%s' is missing, disabled, or invalid\n", active_id);
     } else {
-        fprintf(stderr, "Track config error: lap_mode must be 'separate' or 'shared'\n");
+        print_loaded_track(track, "loaded");
+    }
+
+cleanup:
+    json_object_put(root);
+    return ok;
+}
+
+bool track_config_load_by_position(const char *filename, double latitude,
+                                   double longitude, TrackConfig *track) {
+    struct json_object *root = json_object_from_file(filename);
+    if (root == NULL) {
+        fprintf(stderr, "Track config error: cannot load %s\n", filename);
+        return false;
+    }
+
+    bool ok = false;
+    struct json_object *events;
+    if (!json_object_object_get_ex(root, "events", &events) ||
+        !json_object_is_type(events, json_type_array)) {
+        fprintf(stderr, "Track config error: events array is required\n");
         goto cleanup;
     }
 
-    struct json_object *min_lap_seconds;
-    if (json_object_object_get_ex(selected_event, "min_lap_seconds", &min_lap_seconds)) {
-        int seconds = json_object_get_int(min_lap_seconds);
-        if (seconds > 0) track->min_lap_time_seconds = seconds;
-    }
+    size_t event_count = json_object_array_length(events);
+    for (size_t i = 0; i < event_count; i++) {
+        struct json_object *event = json_object_array_get_idx(events, i);
+        TrackConfig candidate;
+        if (!json_object_is_type(event, json_type_object) || !load_event(event, &candidate)) {
+            continue;
+        }
 
-    struct json_object *min_speed_kmh;
-    if (json_object_object_get_ex(selected_event, "min_speed_kmh", &min_speed_kmh)) {
-        track->min_speed_kmh = (float)json_object_get_double(min_speed_kmh);
+        if (config_polygon_contains(&candidate.start_polygon, latitude, longitude) ||
+            config_polygon_contains(&candidate.finish_polygon, latitude, longitude)) {
+            *track = candidate;
+            print_loaded_track(track, "auto-selected");
+            ok = true;
+            break;
+        }
     }
-
-    printf("Track loaded: %s / %s (%s mode, minimum lap %ds, minimum speed %.1f km/h)\n",
-           track->track_name, track->event_name,
-           track->lap_mode == TRACK_LAP_MODE_SHARED ? "shared" : "separate",
-           track->min_lap_time_seconds, track->min_speed_kmh);
-    ok = true;
 
 cleanup:
     json_object_put(root);

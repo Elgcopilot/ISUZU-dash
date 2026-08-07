@@ -32,6 +32,14 @@ void lap_timer_init(LapTimer *timer, const TrackConfig *track) {
     }
 }
 
+void lap_timer_switch_event(LapTimer *timer, const TrackConfig *track) {
+    lap_timer_init(timer, track);
+
+    // Selection happens as the vehicle enters a configured lap gate. Treat
+    // that entry as a real crossing so the first lap starts immediately.
+    timer->position_initialized = true;
+}
+
 void lap_timer_update(LapTimer *timer, const GPSData *gps, float *lap_time_seconds,
                       bool *timing_active, float *best_lap_time, float *lap_delta,
                       bool *lap_delta_valid) {
