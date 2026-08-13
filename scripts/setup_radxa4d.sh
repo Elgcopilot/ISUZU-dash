@@ -101,7 +101,8 @@ $SUDO apt-get install -y \
   libinput-dev \
   libudev-dev \
   libevdev-dev \
-  libxkbcommon-dev
+  libxkbcommon-dev \
+  libjson-c-dev
 
 echo "[2/5] Building project ($BUILD_TYPE)..."
 cmake -S "$PROJECT_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
@@ -114,20 +115,25 @@ fi
 
 if [[ "$INSTALL_SERVICE" -eq 1 ]]; then
   echo "[3/5] Installing systemd service..."
+  $SUDO install -d -m 755 /mnt/candata/app
+  $SUDO install -m 755 "$BIN_PATH" /mnt/candata/app/isuzu_mfd
   TMP_SERVICE="$(mktemp)"
   cat > "$TMP_SERVICE" <<EOF
 [Unit]
 Description=Isuzu MFD Dashboard
-After=network.target
+After=local-fs.target
+RequiresMountsFor=/mnt/candata
 
 [Service]
 Type=simple
-ExecStartPre=/sbin/ip link set $CAN_IFACE down
-ExecStartPre=/sbin/ip link set $CAN_IFACE up type can bitrate $CAN_BITRATE restart-ms 100
-ExecStart=$BIN_PATH
+ExecStartPre=/bin/sh -c 'echo 0 > /sys/class/vtconsole/vtcon1/bind'
+ExecStart=/mnt/candata/app/isuzu_mfd
+WorkingDirectory=/mnt/candata/app
 Restart=on-failure
-RestartSec=3
-User=root
+RestartSec=2
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

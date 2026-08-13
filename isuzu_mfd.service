@@ -1,15 +1,18 @@
 [Unit]
 Description=Isuzu MFD Dashboard
-After=network.target
+After=local-fs.target
+RequiresMountsFor=/mnt/candata
 
 [Service]
 Type=simple
-ExecStartPre=/sbin/ip link set can0 down
-ExecStartPre=/sbin/ip link set can0 up type can bitrate 500000 restart-ms 100
-ExecStart=/home/elg/isuzu_mfd/build/isuzu_mfd
+ExecStartPre=/bin/sh -c 'echo 0 > /sys/class/vtconsole/vtcon1/bind'
+ExecStart=/mnt/candata/app/isuzu_mfd
+WorkingDirectory=/mnt/candata/app
 Restart=on-failure
-RestartSec=3
-User=root
+RestartSec=2
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

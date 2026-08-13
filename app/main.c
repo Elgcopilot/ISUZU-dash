@@ -21,11 +21,28 @@
 #include <time.h>
 #include <stdio.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdlib.h>
 #include "app_config.h"
 
 #define DISP_BUF_SIZE (800 * 480 / 10)
 #define GPS_UPDATE_INTERVAL_US 66667  // 15 Hz
+
+static volatile sig_atomic_t shutdown_requested;
+
+static void handle_shutdown_signal(int signal_number) {
+    (void)signal_number;
+    shutdown_requested = 1;
+}
+
+static bool install_signal_handlers(void) {
+    struct sigaction action = {0};
+    action.sa_handler = handle_shutdown_signal;
+    sigemptyset(&action.sa_mask);
+
+    return sigaction(SIGTERM, &action, NULL) == 0 &&
+           sigaction(SIGINT, &action, NULL) == 0;
+}
 
 // ADS1115 Pressure Sensor Thread
 void *ads1115_thread(void *arg) {
@@ -39,7 +56,7 @@ void *ads1115_thread(void *arg) {
     
     printf("ADS1115 pressure sensor thread started\n");
     
-    while(1) {
+    while(!shutdown_requested) {
         // Read boost pressure from ADS1115 AIN1
         float boost_kpa = ads1115_read_boost_kpa();
         
@@ -318,7 +335,7 @@ void *mqtt_thread(void *arg) {
     
     // Publish telemetry at 25 Hz (every 40ms).
     int publish_count = 0;
-    while(1) {
+    while(!shutdown_requested) {
         // Copy vehicle data with mutex protection
         VehicleData local_data;
         pthread_mutex_lock(&data_mutex);
@@ -386,7 +403,7 @@ void *csv_thread(void *arg) {
     }
 
     printf("CSV telemetry logger thread started\n");
-    while (1) {
+    while (!shutdown_requested) {
         VehicleData local_data;
         pthread_mutex_lock(&data_mutex);
         local_data = v_data;
@@ -405,6 +422,11 @@ void *csv_thread(void *arg) {
 
 int main(void)
 {
+    if (!install_signal_handlers()) {
+        perror("Failed to install shutdown signal handlers");
+        return 1;
+    }
+
     // 1. PIN UI THREAD TO CPU CORE 0
     // This prevents the heavy UI drawing from interrupting the CAN processing on Cores 1/2
     cpu_set_t cpuset;
@@ -538,7 +560,7 @@ int main(void)
     // bool shutdown_triggered = false;
 
     // 9. MAIN UI LOOP
-    while(1) {
+    while(!shutdown_requested) {
         // Draw the screen
         lv_timer_handler();
         
@@ -598,5 +620,18 @@ int main(void)
         sched_yield();
     }
 
+    printf("Shutdown requested: flushing telemetry and stopping dashboard\n");
+    fflush(stdout);
+
+    if (camera_running) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "systemctl stop --no-block %s", cam_service);
+        int result = system(cmd);
+        (void)result;
+    }
+
+    pthread_join(csv_th, NULL);
+    pthread_join(mqtt_th, NULL);
+    printf("Dashboard shutdown complete\n");
     return 0;
 }
