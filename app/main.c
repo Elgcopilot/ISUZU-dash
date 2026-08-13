@@ -26,7 +26,7 @@
 #include "app_config.h"
 
 #define DISP_BUF_SIZE (800 * 480 / 10)
-#define GPS_UPDATE_INTERVAL_US 66667  // 15 Hz
+#define GPS_POLL_INTERVAL_US 10000  // Drain 25 Hz receiver output without delay.
 
 static volatile sig_atomic_t shutdown_requested;
 
@@ -125,7 +125,11 @@ void *gps_thread(void *arg) {
     
     while(1) {
         // Read GPS data from UART4
-        gps_update(&temp_gps);
+        bool navigation_updated = gps_update(&temp_gps);
+        if (!navigation_updated) {
+            usleep(GPS_POLL_INTERVAL_US);
+            continue;
+        }
 
         // Lock to the first enabled event whose start/finish zone the vehicle
         // enters. This removes the need to edit active_event_id per event.
@@ -161,9 +165,7 @@ void *gps_thread(void *arg) {
         v_data.lap_timing_active = lap_timing_active;
         pthread_mutex_unlock(&data_mutex);
         
-        // Refresh GPS speed and running lap time at 15 Hz.
-        // New GPS coordinates/speed still depend on the receiver's NMEA output rate.
-        usleep(GPS_UPDATE_INTERVAL_US);
+        usleep(GPS_POLL_INTERVAL_US);
     }
     
     gps_close();

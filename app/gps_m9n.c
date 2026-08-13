@@ -6,13 +6,102 @@
 #include <unistd.h>
 #include <termios.h>
 #include <errno.h>
+#include <stdint.h>
+
+#define GPS_NAV_RATE_MS 40
+
+#define UBX_CLASS_CFG 0x06
+#define UBX_CFG_MSG   0x01
+#define UBX_CFG_RATE  0x08
+#define UBX_CLASS_NMEA 0xF0
 
 static int gps_fd = -1;
 static char line_buffer[256];
 static int buf_pos = 0;
 
+static bool gps_write_all(const unsigned char *data, size_t length) {
+    size_t written = 0;
+
+    while (written < length) {
+        ssize_t result = write(gps_fd, data + written, length - written);
+        if (result > 0) {
+            written += (size_t)result;
+        } else if (result < 0 && (errno == EAGAIN || errno == EINTR)) {
+            usleep(1000);
+        } else {
+            return false;
+        }
+    }
+    return tcdrain(gps_fd) == 0;
+}
+
+static bool gps_send_ubx(uint8_t message_class, uint8_t message_id,
+                         const uint8_t *payload, uint16_t payload_length) {
+    unsigned char packet[64];
+    size_t packet_length = (size_t)payload_length + 8;
+    uint8_t checksum_a = 0;
+    uint8_t checksum_b = 0;
+
+    if (packet_length > sizeof(packet)) return false;
+
+    packet[0] = 0xB5;
+    packet[1] = 0x62;
+    packet[2] = message_class;
+    packet[3] = message_id;
+    packet[4] = (uint8_t)payload_length;
+    packet[5] = (uint8_t)(payload_length >> 8);
+    memcpy(packet + 6, payload, payload_length);
+
+    for (size_t i = 2; i < packet_length - 2; i++) {
+        checksum_a = (uint8_t)(checksum_a + packet[i]);
+        checksum_b = (uint8_t)(checksum_b + checksum_a);
+    }
+    packet[packet_length - 2] = checksum_a;
+    packet[packet_length - 1] = checksum_b;
+    return gps_write_all(packet, packet_length);
+}
+
+static bool gps_set_nmea_uart1_rate(uint8_t message_id, uint8_t rate) {
+    // CFG-MSG rates: I2C, UART1, UART2, USB, SPI, reserved.
+    uint8_t payload[8] = {UBX_CLASS_NMEA, message_id, 0, rate, 0, 0, 0, 0};
+    return gps_send_ubx(UBX_CLASS_CFG, UBX_CFG_MSG, payload, sizeof(payload));
+}
+
+static bool gps_configure_25hz(void) {
+    // RMC contains position, validity, speed, and UTC and is the only 25 Hz
+    // sentence. GSA/GSV remain at 1 Hz for satellite status. Disabling the
+    // other NMEA sentences keeps output safely below 38400-baud capacity.
+    static const struct {
+        uint8_t id;
+        uint8_t rate;
+    } nmea_rates[] = {
+        {0x00, 0},  // GGA
+        {0x01, 0},  // GLL
+        {0x02, 25}, // GSA
+        {0x03, 25}, // GSV
+        {0x04, 1},  // RMC
+        {0x05, 0},  // VTG
+        {0x08, 0},  // ZDA
+        {0x0D, 0},  // GNS
+    };
+
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(nmea_rates) / sizeof(nmea_rates[0]); i++) {
+        if (!gps_set_nmea_uart1_rate(nmea_rates[i].id, nmea_rates[i].rate)) ok = false;
+        usleep(20000);
+    }
+
+    uint8_t rate_payload[6] = {
+        (uint8_t)GPS_NAV_RATE_MS, (uint8_t)(GPS_NAV_RATE_MS >> 8),
+        1, 0, // one navigation cycle per measurement
+        0, 0  // UTC time reference
+    };
+    if (!gps_send_ubx(UBX_CLASS_CFG, UBX_CFG_RATE, rate_payload, sizeof(rate_payload))) ok = false;
+    return ok;
+}
+
 bool gps_init(void) {
-    gps_fd = open("/dev/ttyS4", O_RDONLY | O_NOCTTY | O_NONBLOCK);
+    gps_fd = open("/dev/ttyS4", O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (gps_fd < 0) {
         printf("Failed to open GPS UART4: %s\n", strerror(errno));
         return false;
@@ -54,7 +143,11 @@ bool gps_init(void) {
         return false;
     }
 
-    printf("GPS M9N initialized on UART4 (38400 baud)\n");
+    if (gps_configure_25hz()) {
+        printf("GPS M9N initialized on UART4 (38400 baud, 25 Hz RMC)\n");
+    } else {
+        printf("GPS M9N initialized, but 25 Hz configuration failed\n");
+    }
     return true;
 }
 
@@ -239,8 +332,8 @@ static void parse_gga(const char *sentence, GPSData *gps_data) {
 
 // Parse RMC sentence for ground speed
 // $GNRMC,hhmmss.ss,A,ddmm.mmmm,N,dddmm.mmmm,E,speed_knots,course,date,...*CS
-static void parse_rmc(const char *sentence, GPSData *gps_data) {
-    if (!nmea_checksum_valid(sentence)) return;
+static bool parse_rmc(const char *sentence, GPSData *gps_data) {
+    if (!nmea_checksum_valid(sentence)) return false;
 
     char *tokens[16];
     char buf[256];
@@ -254,17 +347,42 @@ static void parse_rmc(const char *sentence, GPSData *gps_data) {
         token = strtok(NULL, ",*");
     }
 
-    if (token_count < 8 || tokens[2][0] != 'A' || tokens[7][0] == '\0') {
+    if (token_count < 8) return false;
+
+    gps_data->fix_valid = tokens[2][0] == 'A';
+    if (!gps_data->fix_valid || tokens[1][0] == '\0' || tokens[3][0] == '\0' ||
+        tokens[4][0] == '\0' || tokens[5][0] == '\0' || tokens[6][0] == '\0' ||
+        tokens[7][0] == '\0') {
         gps_data->speed_valid = false;
-        return;
+        return true;
     }
+
+    double utc_time = atof(tokens[1]);
+    gps_data->utc_hour = (int)utc_time / 10000;
+    gps_data->utc_minute = ((int)utc_time / 100) % 100;
+    gps_data->utc_second = (int)utc_time % 100;
+    gps_data->time_valid = gps_data->utc_hour >= 0 && gps_data->utc_hour < 24 &&
+                           gps_data->utc_minute >= 0 && gps_data->utc_minute < 60 &&
+                           gps_data->utc_second >= 0 && gps_data->utc_second < 60;
+
+    double lat_raw = atof(tokens[3]);
+    int lat_degrees = (int)(lat_raw / 100.0);
+    gps_data->latitude = lat_degrees + (lat_raw - lat_degrees * 100.0) / 60.0;
+    if (tokens[4][0] == 'S') gps_data->latitude = -gps_data->latitude;
+
+    double lon_raw = atof(tokens[5]);
+    int lon_degrees = (int)(lon_raw / 100.0);
+    gps_data->longitude = lon_degrees + (lon_raw - lon_degrees * 100.0) / 60.0;
+    if (tokens[6][0] == 'W') gps_data->longitude = -gps_data->longitude;
 
     gps_data->speed_kmh = atof(tokens[7]) * 1.852;
     gps_data->speed_valid = true;
+    return true;
 }
 
-void gps_update(GPSData *gps_data) {
-    if (gps_fd < 0) return;
+bool gps_update(GPSData *gps_data) {
+    bool navigation_updated = false;
+    if (gps_fd < 0) return false;
     
     char byte;
     while (read(gps_fd, &byte, 1) == 1) {
@@ -280,7 +398,7 @@ void gps_update(GPSData *gps_data) {
                 } else if (strstr(line_buffer, "$G") && strstr(line_buffer, "GGA")) {
                     parse_gga(line_buffer, gps_data);
                 } else if (strstr(line_buffer, "$G") && strstr(line_buffer, "RMC")) {
-                    parse_rmc(line_buffer, gps_data);
+                    if (parse_rmc(line_buffer, gps_data)) navigation_updated = true;
                 }
                 
                 buf_pos = 0;
@@ -289,4 +407,5 @@ void gps_update(GPSData *gps_data) {
             line_buffer[buf_pos++] = byte;
         }
     }
+    return navigation_updated;
 }

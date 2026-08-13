@@ -34,8 +34,9 @@ typedef struct {
 // Initialize GPS UART (UART4, 38400 baud)
 bool gps_init(void);
 
-// Read and parse NMEA sentences
-void gps_update(GPSData *gps_data);
+// Read pending NMEA sentences. Returns true when a fresh RMC navigation
+// solution (position, speed, and time) was received.
+bool gps_update(GPSData *gps_data);
 
 // Close GPS UART
 void gps_close(void);
